@@ -1,120 +1,173 @@
 import os
 import json
+from functools import wraps
+from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.responses import RedirectResponse, JSONResponse
+import requests
+
+# --- SDKs de Google y Firebase ---
 import google.generativeai as genai
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, conlist
-from typing import List, Literal, Optional
+import firebase_admin
+from firebase_admin import credentials, auth, firestore
 
-# --- 1. MODELOS DE DATOS ---
+# --- 1. INICIALIZACIÓN DE SERVICIOS ---
 
-# Modelos para /dashboard
-class ActivityItem(BaseModel):
-    id: str
-    type: Literal["DRAFT_READY", "CLASSIFICATION", "HIGH_PRIORITY", "SUMMARY_DONE"]
-    title: str
-    subtitle: str
-    timestamp: str
+# Inicializa Firebase Admin SDK (para verificar tokens y acceder a Firestore)
+try:
+    cred_json_str = os.environ["FIREBASE_ADMIN_SDK_JSON"]
+    cred_dict = json.loads(cred_json_str)
+    cred = credentials.Certificate(cred_dict)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("Firebase Admin SDK inicializado correctamente.")
+except KeyError:
+    db = None
+    print("ADVERTENCIA: Credenciales de Firebase Admin no encontradas. La autenticación y Firestore no funcionarán.")
 
-class DashboardData(BaseModel):
-    agent_name: str
-    status_text: str
-    is_active: bool
-    time_saved_minutes: int
-    activity_feed: conlist(ActivityItem, min_length=0)
+# Inicializa Gemini
+try:
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    print("API de Gemini configurada.")
+except KeyError:
+    print("ADVERTENCIA: API Key de Gemini no encontrada. La IA no funcionará.")
 
-# [NUEVO] Modelos para /api/voice-command
-class VoiceCommandInput(BaseModel):
-    text: str
+app = FastAPI(title="AgentFlow Production Backend")
 
-class ActionParameter(BaseModel):
-    client_name: Optional[str] = None
-    time_period: Optional[str] = None
-    subject_keywords: Optional[List[str]] = None
-    error_message: Optional[str] = None
 
-class VoiceCommandOutput(BaseModel):
-    action: str
-    parameters: ActionParameter
+# --- 2. DECORADOR DE AUTENTICACIÓN (NUESTRA MURALLA DE SEGURIDAD) ---
 
-# --- 2. LA APLICACIÓN FASTAPI ---
-app = FastAPI()
-
-# --- 3. ENDPOINTS DE LA API ---
-
-@app.get("/health")
-async def health_check():
-    try:
-        api_key_status = "Loaded" if os.environ.get("GEMINI_API_KEY") else "Not Found"
-        return {"status": "ok", "gemini_api_key_status": api_key_status}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/dashboard", response_model=DashboardData)
-async def get_dashboard():
-    # (Esta función no ha cambiado desde la v2.5)
-    # ... (código idéntico a la versión anterior)
-    activity_feed = []
-    gemini_enabled = False
-    status_text = "🟠 Modo Simulado"
-
-    try:
-        api_key = os.environ["GEMINI_API_KEY"]
-        genai.configure(api_key=api_key)
-        generation_config = genai.types.GenerationConfig(response_mime_type="application/json")
-        model = genai.GenerativeModel('gemini-1.5-pro-latest', generation_config=generation_config)
-        gemini_enabled = True
-        status_text = "🟢 Analizando con IA Gemini."
-    except KeyError:
-        activity_feed = [{"id": "mock-001", "type": "CLASSIFICATION", "title": "API Key no encontrada", "subtitle": "La variable de entorno no está configurada.", "timestamp": "Ahora"}]
-
-    if gemini_enabled:
-        emails = [{"from": "test@test.com", "subject": "test", "body": "test"}]
-        prompt = f"""
-        Convierte esta lista a JSON: {json.dumps(emails)}.
-        Tu respuesta debe ser ÚNICA Y EXCLUSIVAMENTE una lista de objetos JSON válida, que se pueda parsear directamente.
-        Cada objeto debe tener: "id", "type", "title", "subtitle", "timestamp".
-        El tipo debe ser "CLASSIFICATION".
-        """
+def verify_token(f):
+    @wraps(f)
+    async def decorated(request: Request, *args, **kwargs):
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Falta el token de autorización o el formato es incorrecto.")
+        
+        id_token = auth_header.split("Bearer ")[1]
+        
         try:
-            response = model.generate_content(prompt)
-            activity_feed = json.loads(response.text)
-            if not activity_feed:
-                 raise ValueError("Gemini returned an empty list.")
+            decoded_token = auth.verify_id_token(id_token)
+            request.state.user = decoded_token # Inyectamos los datos del usuario en la petición
         except Exception as e:
-            print(f"ERROR en GEMINI: {e}")
-            activity_feed = [{"id": "err-ai-001", "type": "HIGH_PRIORITY", "title": "Error al procesar", "subtitle": str(e), "timestamp": "Ahora"}]
-    
-    return { "agent_name": "Aura ✨", "status_text": status_text, "is_active": True, "time_saved_minutes": 120, "activity_feed": activity_feed }
+            raise HTTPException(status_code=403, detail=f"Token inválido o expirado: {e}")
+        
+        return await f(request, *args, **kwargs)
+    return decorated
 
-# --- [NUEVO] El Cerebro Lingüístico de Aura ---
-def parse_command_with_gemini(text: str) -> dict:
+# --- 3. ENDPOINTS ---
+
+# No necesitamos un endpoint /login, Firebase lo gestiona desde el cliente.
+# La app obtiene el token y lo envía a nuestros endpoints protegidos.
+
+@app.get("/")
+def root():
+    return {"status": "AgentFlow Backend Activo"}
+
+
+@app.post("/api/voice-command")
+@verify_token # <--- Endpoint protegido
+async def voice_command(request: Request, data: dict):
+    user_id = request.state.user["uid"]
+    text = data.get("text", "")
+    
+    # --- Llamada al cerebro de Gemini para interpretar la intención ---
+    model = genai.GenerativeModel('gemini-1.5-pro-latest', generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
     prompt = f"""
-    Eres el "Motor de Comprensión de Lenguaje Natural" de la IA Aura.
-    Tu tarea es analizar la transcripción de un comando de voz y convertirlo a una acción JSON estructurada.
-    Transcripción del Usuario: "{text}"
-    Analiza la transcripción para identificar la "action" principal y sus "parameters".
-    Las acciones posibles son: "summarize_inbox", "search_emails", "draft_reply", "error".
-    Los parámetros posibles son: "client_name", "time_period", "subject_keywords".
-    Ejemplos:
-    - texto: "resume mi bandeja de entrada" -> acción: "summarize_inbox"
-    - texto: "busca los correos de TechCorp del último mes" -> acción: "search_emails", parámetros: {{"client_name": "TechCorp", "time_period": "last_30_days"}}
-    Basado en el texto proporcionado, genera el objeto JSON correspondiente.
-    Tu respuesta debe ser ÚNICA Y EXCLUSIVAMENTE un objeto JSON válido, que empiece con '{{' y termine con '}}'.
+    Analiza el siguiente comando y extráe la 'action' y los 'parameters'.
+    Comando: "{text}"
+    Acciones posibles: "summarize_inbox", "search_emails", "create_draft".
+    Parámetros a extraer: "client_name", "time_period".
+    Responde ÚNICAMENTE con un JSON válido.
+    Ejemplo: si el comando es "resume correos de acme de ayer", responde {{"action": "summarize_inbox", "parameters": {{"client_name": "acme", "time_period": "yesterday"}}}}
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro-latest', generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
         response = model.generate_content(prompt)
-        return json.loads(response.text)
+        intent = json.loads(response.text)
     except Exception as e:
-        print(f"ERROR en el parseo del comando de voz: {e}")
-        return {"action": "error", "parameters": {"error_message": str(e)}}
+        raise HTTPException(status_code=500, detail=f"Error al procesar el comando con la IA: {e}")
+    
+    action = intent.get("action")
+    parameters = intent.get("parameters", {})
 
-# --- [NUEVO] El Endpoint para Comandos de Voz ---
-@app.post("/api/voice-command", response_model=VoiceCommandOutput)
-async def handle_voice_command(command: VoiceCommandInput):
-    """
-    Recibe una transcripción de voz, la procesa con la IA
-    y devuelve una acción estructurada.
-    """
-    action_json = parse_command_with_gemini(command.text)
-    return action_json
+    # --- ACTION ENGINE (Motor de Acciones) ---
+    if action == "summarize_inbox":
+        # Placeholder: Aquí iría la lógica para leer correos de Gmail
+        # 1. Leer de Firestore las credenciales de Gmail para user_id
+        # 2. Conectarse a la API de Gmail
+        # 3. Obtener correos
+        # 4. Resumirlos con Gemini
+        # 5. Devolver el payload
+        summary_text = f"Resumen para el usuario {user_id}: 5 correos importantes encontrados sobre {parameters.get('client_name', 'varios temas')}."
+        return {"action": "summarize_inbox", "payload": {"summary": summary_text}}
+    
+    return intent # Por ahora, devolvemos la intención detectada
+
+
+# --- OAUTH2 PARA CONEXIÓN DE CUENTAS EXTERNAS ---
+
+# Credenciales OAuth
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+# IMPORTANTE: Esta debe ser la URL de TU backend en Vercel
+REDIRECT_URI_GOOGLE = "https://agent-flow-backend-drab.vercel.app/google/callback" 
+
+@app.get("/auth/google")
+async def auth_google(request: Request):
+    # El 'state' es crucial para la seguridad y para saber qué usuario inició el flujo
+    # Asumimos que el token de Firebase se pasa como parámetro de consulta
+    id_token = request.query_params.get("token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="Falta el token de usuario para iniciar el flujo OAuth.")
+    
+    scope = "https://www.googleapis.com/auth/gmail.readonly"
+    url = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={REDIRECT_URI_GOOGLE}"
+        f"&response_type=code"
+        f"&scope={scope}"
+        f"&access_type=offline"
+        f"&prompt=consent" # Fuerza a que siempre pida el consentimiento y devuelva un refresh_token
+        f"&state={id_token}" # Pasamos el token del usuario como state
+    )
+    return RedirectResponse(url=url)
+
+
+@app.get("/google/callback")
+async def google_callback(request: Request):
+    id_token = request.query_params.get("state")
+    code = request.query_params.get("code")
+
+    try:
+        # Verificamos el token para saber a qué usuario pertenecen las credenciales
+        decoded_token = auth.verify_id_token(id_token)
+        user_id = decoded_token["uid"]
+
+        # Intercambiamos el código por tokens de acceso y refresh
+        token_url = "https://oauth2.googleapis.com/token"
+        data = {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "code": code,
+            "redirect_uri": REDIRECT_URI_GOOGLE,
+            "grant_type": "authorization_code"
+        }
+        r = requests.post(token_url, data=data)
+        tokens = r.json()
+        
+        # Guardamos los tokens de forma segura en Firestore
+        if db:
+            user_ref = db.collection("users").document(user_id)
+            user_ref.collection("connected_accounts").document("google").set({
+                "access_token": tokens.get("access_token"),
+                "refresh_token": tokens.get("refresh_token"),
+                "scope": tokens.get("scope"),
+                "token_type": tokens.get("token_type"),
+                "expiry_date": tokens.get("expires_in")
+            })
+
+        # Idealmente, redirigir a una página de éxito o usar un "deep link" a la app.
+        return JSONResponse(content={"status": "Cuenta de Google conectada con éxito."})
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
