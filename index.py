@@ -13,7 +13,6 @@ class DashboardData(BaseModel):
 
 app = FastAPI()
 
-# [NUEVO] Endpoint de diagnóstico para verificar la API Key
 @app.get("/health")
 async def health_check():
     try:
@@ -24,7 +23,6 @@ async def health_check():
 
 @app.get("/dashboard", response_model=DashboardData)
 async def get_dashboard():
-    # ... (toda la lógica se mantiene igual, pero vamos a cambiar el prompt)
     activity_feed = []
     gemini_enabled = False
     status_text = "🟠 Modo Simulado"
@@ -33,7 +31,8 @@ async def get_dashboard():
         api_key = os.environ["GEMINI_API_KEY"]
         genai.configure(api_key=api_key)
         generation_config = genai.types.GenerationConfig(response_mime_type="application/json")
-        model = genai.GenerativeModel('gemini-pro', generation_config=generation_config)
+        # [LA ÚNICA LÍNEA CAMBIADA] Usamos el modelo recomendado y más reciente.
+        model = genai.GenerativeModel('gemini-1.5-pro-latest', generation_config=generation_config)
         gemini_enabled = True
         status_text = "🟢 Analizando con IA Gemini."
     except KeyError:
@@ -41,17 +40,16 @@ async def get_dashboard():
 
     if gemini_enabled:
         emails = [{"from": "test@test.com", "subject": "test", "body": "test"}]
-        # [NUEVO] Prompt ultra-simplificado a prueba de fallos
         prompt = f"""
         Convierte esta lista a JSON: {json.dumps(emails)}.
-        Tu respuesta debe ser una lista de objetos JSON válida.
+        Tu respuesta debe ser ÚNICA Y EXCLUSIVAMENTE una lista de objetos JSON válida, que se pueda parsear directamente.
         Cada objeto debe tener: "id", "type", "title", "subtitle", "timestamp".
         El tipo debe ser "CLASSIFICATION".
         """
         try:
             response = model.generate_content(prompt)
             activity_feed = json.loads(response.text)
-            if not activity_feed: # Si la lista está vacía, es un problema
+            if not activity_feed:
                  raise ValueError("Gemini returned an empty list.")
         except Exception as e:
             print(f"ERROR en GEMINI: {e}")
