@@ -36,7 +36,7 @@ def get_dashboard_data_from_backend():
         ]
     }
 
-@app.get("/api/dashboard", response_model=DashboardData)
+@app.get("/dashboard", response_model=DashboardData)
 async def get_dashboard():
     """Endpoint principal del dashboard."""
     return get_dashboard_data_from_backend()
