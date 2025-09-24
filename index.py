@@ -71,7 +71,33 @@ def verify_token(f):
 # --- 3. LÓGICA DE IA Y DATOS (sin cambios) ---
 
 def interpret_intent_with_gemini(text: str) -> dict:
-    model = genai.GenerativeModel('gemini-1.5-pro-latest'); prompt = f'Analiza: "{text}". Extrae "action" y "parameters" en JSON.'; response = model.generate_content(prompt); return json.loads(response.text)
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    # [LA CORRECCIÓN] Prompt más detallado y con ejemplos claros.
+    prompt = f"""
+    Tu tarea es actuar como un router de intenciones. Analiza el comando del usuario y conviértelo a un formato JSON estricto.
+    Comando del usuario: "{text}"
+
+    Las acciones válidas son "summarize_inbox", "search_emails", o "unknown".
+    Los parámetros válidos son "client_name" (string) y "time_period" (string).
+
+    Ejemplos de conversión:
+    - "resume mis correos" -> {{"action": "summarize_inbox", "parameters": {{}}}}
+    - "busca los emails de acme de la semana pasada" -> {{"action": "search_emails", "parameters": {{"client_name": "acme", "time_period": "last week"}}}}
+    - "cuéntame un chiste" -> {{"action": "unknown", "parameters": {{}}}}
+
+    Basado en el comando del usuario, proporciona ÚNICA Y EXCLUSIVAMENTE el objeto JSON correspondiente. No añadas texto extra ni explicaciones.
+    """
+    try:
+        response = model.generate_content(prompt)
+        # Añadimos un print para ver en los logs qué nos devuelve Gemini
+        print(f"Respuesta cruda de Gemini: {response.text}") 
+        return json.loads(response.text)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"Error de parseo JSON desde Gemini: {e}")
+        return {"action": "error", "parameters": {"message": "La IA devolvió un formato inesperado."}}
+    except Exception as e:
+        print(f"Error general en Gemini: {e}")
+        return {"action": "error", "parameters": {"message": "No se pudo comunicar con la IA."}}
 def get_emails_for_user(user_id: str) -> list:
     return [{"from": "jefe@empresa.com", "subject": "Revisión presupuesto Q4"}, {"from": "soporte@saas.com", "subject": "Ticket #481516"}]
 def summarize_emails_with_gemini(emails: list) -> str:
