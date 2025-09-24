@@ -33,7 +33,7 @@ try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 except KeyError: print("ADVERTENCIA: API Key de Gemini no encontrada.")
 
-app = FastAPI(title="AgentFlow Production Backend v4.1")
+app = FastAPI(title="AgentFlow Production Backend v4.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- 2. DECORADOR DE AUTENTICACIÓN ---
@@ -49,7 +49,6 @@ def verify_token(f):
     return decorated
 
 # --- 3. LÓGICA DE IA Y DATOS ---
-
 def interpret_intent_with_gemini(text: str) -> dict:
     model = genai.GenerativeModel('gemini-1.5-pro-latest')
     prompt = f"""
@@ -60,7 +59,6 @@ def interpret_intent_with_gemini(text: str) -> dict:
     Ejemplos de conversión:
     - "resume mis correos" -> {{"action": "summarize_inbox", "parameters": {{}}}}
     - "busca los emails de acme de la semana pasada" -> {{"action": "search_emails", "parameters": {{"client_name": "acme", "time_period": "last week"}}}}
-    - "cuéntame un chiste" -> {{"action": "unknown", "parameters": {{}}}}
     Proporciona ÚNICA Y EXCLUSIVAMENTE el objeto JSON correspondiente. No añadas texto extra.
     """
     try:
@@ -84,7 +82,15 @@ def get_real_emails_for_user(user_id: str, search_query: str = None) -> list:
     if not doc.exists: raise Exception("Cuenta de Google no conectada.")
     
     tokens = doc.to_dict()
-    creds = Credentials.from_authorized_user_info(tokens, scopes=["https://www.googleapis.com/auth/gmail.readonly"])
+    
+    creds = Credentials(
+        token=tokens.get("access_token"),
+        refresh_token=tokens.get("refresh_token"),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+        scopes=["https://www.googleapis.com/auth/gmail.readonly"]
+    )
 
     if not creds.valid and creds.expired and creds.refresh_token:
         print(f"Refrescando token de acceso para usuario {user_id}")
@@ -109,11 +115,10 @@ def get_real_emails_for_user(user_id: str, search_query: str = None) -> list:
                 emails_list.append({"from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
         return emails_list
     except HttpError as error:
-        print(f"Ocurrió un error con la API de Gmail: {error}")
         raise Exception(f"Error de API de Gmail: {error.reason}")
 
 def summarize_emails_with_gemini(emails: list) -> str:
-    prompt = f'Eres Aura, una IA asistente. Genera un resumen ejecutivo de estos correos: {json.dumps(emails)}. Sé concisa y profesional.'
+    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
     model = genai.GenerativeModel('gemini-1.5-pro-latest')
     response = model.generate_content(prompt)
     return response.text.strip()
@@ -162,6 +167,7 @@ REDIRECT_URI_GOOGLE = "https://agent-flow-backend-drab.vercel.app/google/callbac
 @app.get("/auth/google")
 async def auth_google(request: Request):
     id_token = request.query_params.get("token")
+    if not id_token: raise HTTPException(status_code=400, detail="Falta el token de usuario.")
     scope = "https://www.googleapis.com/auth/gmail.readonly"
     url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={REDIRECT_URI_GOOGLE}"
            f"&response_type=code&scope={scope}&access_type=offline&prompt=consent&state={id_token}")
@@ -172,6 +178,8 @@ async def google_callback(request: Request):
     initialize_firebase_admin_once()
     if not db: raise HTTPException(status_code=500, detail="Base de datos no disponible.")
     id_token = request.query_params.get("state"); code = request.query_params.get("code")
+    if not id_token or not code: raise HTTPException(status_code=400, detail="Falta información en el callback.")
+
     try:
         user_id = auth.verify_id_token(id_token)["uid"]
         token_url = "https://oauth2.googleapis.com/token"
