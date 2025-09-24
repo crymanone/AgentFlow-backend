@@ -141,3 +141,19 @@ async def google_callback(request: Request):
         return JSONResponse(content={"status": "Cuenta de Google conectada. Puedes cerrar esta ventana."})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
+
+@app.get("/api/accounts/status")
+@verify_token
+async def get_accounts_status(request: Request):
+    user_id = request.state.user["uid"]
+    if not db:
+        raise HTTPException(status_code=500, detail="Base de datos no disponible.")
+    try:
+        accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
+        # .stream() devuelve los documentos. Hacemos una lista con sus IDs.
+        accounts = [doc.id for doc in accounts_ref.stream()]
+        return {"connected": accounts}
+    except Exception as e:
+        print(f"Error al obtener estado de cuentas para {user_id}: {e}")
+        # Es importante devolver un array vacío si hay un error, para que el frontend no crashee.
+        return {"connected": []}        
