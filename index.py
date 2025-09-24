@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 
-# --- SDKs de Google y Firebase ---
+# --- SDKs ---
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 
-# --- 1. INICIALIZACIÓN DE SERVICIOS ---
+# --- INICIALIZACIÓN ---
 db = None
 def initialize_firebase_admin_once():
     global db
@@ -29,14 +29,13 @@ def initialize_firebase_admin_once():
             print("Firebase Admin SDK inicializado.")
         except Exception as e: print(f"ERROR CRÍTICO inicializando Firebase Admin: {e}")
 
-try:
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+try: genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 except KeyError: print("ADVERTENCIA: API Key de Gemini no encontrada.")
 
-app = FastAPI(title="AgentFlow Production Backend v4.2")
+app = FastAPI(title="AgentFlow Production Backend v4.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- 2. DECORADOR DE AUTENTICACIÓN ---
+# --- DECORADOR DE AUTENTICACIÓN ---
 def verify_token(f):
     @wraps(f)
     async def decorated(request: Request, *args, **kwargs):
@@ -48,31 +47,45 @@ def verify_token(f):
         return await f(request, *args, **kwargs)
     return decorated
 
-# --- 3. LÓGICA DE IA Y DATOS ---
+# --- LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
     model = genai.GenerativeModel('gemini-1.5-pro-latest')
     prompt = f"""
-    Tu tarea es actuar como un router de intenciones. Analiza el comando del usuario y conviértelo a un formato JSON estricto.
-    Comando del usuario: "{text}"
-    Las acciones válidas son "summarize_inbox", "search_emails", o "unknown".
-    Los parámetros válidos son "client_name" (string) y "time_period" (string).
-    Ejemplos de conversión:
-    - "resume mis correos" -> {{"action": "summarize_inbox", "parameters": {{}}}}
-    - "busca los emails de acme de la semana pasada" -> {{"action": "search_emails", "parameters": {{"client_name": "acme", "time_period": "last week"}}}}
-    Proporciona ÚNICA Y EXCLUSIVAMENTE el objeto JSON correspondiente. No añadas texto extra.
+    Analiza el siguiente comando y extráelo a un formato JSON estricto.
+    Comando: "{text}"
+    
+    ACCIONES VÁLIDAS: "summarize_inbox", "search_emails", "unknown".
+    PARÁMETROS VÁLIDOS:
+    - "client_name": string
+    - "time_period": string, normalizado a uno de ["today", "yesterday", "last_7_days", "last_30_days"].
+
+    REGLAS DE NORMALIZACIÓN DE FECHAS:
+    - "hoy", "de hoy" -> "today"
+    - "ayer", "de ayer" -> "yesterday"
+    - "esta semana", "última semana", "últimos 7 días" -> "last_7_days"
+    - "este mes", "último mes", "últimos 30 días" -> "last_30_days"
+
+    EJEMPLOS:
+    - "resume los correos de hoy" -> {{"action": "summarize_inbox", "parameters": {{"time_period": "today"}}}}
+    - "busca emails de 'ACME Corp' del ultimo mes" -> {{"action": "search_emails", "parameters": {{"client_name": "ACME Corp", "time_period": "last_30_days"}}}}
+    
+    RESPONDE ÚNICA Y EXCLUSIVAMENTE CON EL OBJETO JSON.
     """
     try:
         response = model.generate_content(prompt)
+        print(f"Respuesta cruda de Gemini (Intención): {response.text}")
         return json.loads(response.text)
-    except Exception as e: return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
+    except Exception as e:
+        print(f"Error en Gemini interpretando intención: {e}")
+        return {"action": "error", "parameters": {"message": "IA no pudo interpretar."}}
 
 def translate_params_to_gmail_query(params: dict) -> str:
     query_parts = []
     if params.get("client_name"): query_parts.append(f'from:"{params["client_name"]}"')
     if params.get("time_period"):
-        period_map = {"hoy": "newer_than:1d", "ayer": "older_than:1d newer_than:2d", "last week": "newer_than:7d", "ultimo mes": "newer_than:30d"}
+        period_map = {"today": "newer_than:1d", "yesterday": "older_than:1d newer_than:2d", "last_7_days": "newer_than:7d", "last_30_days": "newer_than:30d"}
         query_parts.append(period_map.get(params["time_period"], ""))
-    query_parts.extend(["in:inbox", "-in:trash"])
+    query_parts.extend(["in:inbox", "-in:trash", "-in:spam"])
     return " ".join(filter(None, query_parts))
 
 def get_real_emails_for_user(user_id: str, search_query: str = None) -> list:
@@ -82,20 +95,12 @@ def get_real_emails_for_user(user_id: str, search_query: str = None) -> list:
     if not doc.exists: raise Exception("Cuenta de Google no conectada.")
     
     tokens = doc.to_dict()
-    
-    creds = Credentials(
-        token=tokens.get("access_token"),
-        refresh_token=tokens.get("refresh_token"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.environ.get("GOOGLE_CLIENT_ID"),
-        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
-        scopes=["https://www.googleapis.com/auth/gmail.readonly"]
-    )
+    creds = Credentials(token=tokens.get("access_token"), refresh_token=tokens.get("refresh_token"),
+                        token_uri="https://oauth2.googleapis.com/token", client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+                        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"), scopes=["https://www.googleapis.com/auth/gmail.readonly"])
 
     if not creds.valid and creds.expired and creds.refresh_token:
-        print(f"Refrescando token de acceso para usuario {user_id}")
-        creds.refresh(GoogleAuthRequest())
-        doc_ref.update({"access_token": creds.token})
+        creds.refresh(GoogleAuthRequest()); doc_ref.update({"access_token": creds.token})
 
     try:
         service = build('gmail', 'v1', credentials=creds)
@@ -114,8 +119,7 @@ def get_real_emails_for_user(user_id: str, search_query: str = None) -> list:
                 sender = next((i['value'] for i in headers if i['name'] == 'From'), 'Desconocido')
                 emails_list.append({"from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
         return emails_list
-    except HttpError as error:
-        raise Exception(f"Error de API de Gmail: {error.reason}")
+    except HttpError as error: raise Exception(f"Error de API de Gmail: {error.reason}")
 
 def summarize_emails_with_gemini(emails: list) -> str:
     prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
@@ -123,7 +127,7 @@ def summarize_emails_with_gemini(emails: list) -> str:
     response = model.generate_content(prompt)
     return response.text.strip()
 
-# --- 4. ENDPOINTS DE LA API ---
+# --- ENDPOINTS ---
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
 
@@ -133,14 +137,14 @@ async def voice_command(request: Request, data: dict):
     user_id = request.state.user["uid"]; text = data.get("text", "")
     intent = interpret_intent_with_gemini(text); action = intent.get("action"); params = intent.get("parameters", {})
     try:
+        query = translate_params_to_gmail_query(params)
         if action == "summarize_inbox":
-            emails = get_real_emails_for_user(user_id)
-            if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos nuevos."}}
+            emails = get_real_emails_for_user(user_id, search_query=query)
+            if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan con tu petición."}}
             summary = summarize_emails_with_gemini(emails)
             return {"action": "summarize_inbox", "payload": {"summary": summary}}
         
         elif action == "search_emails":
-            query = translate_params_to_gmail_query(params)
             emails = get_real_emails_for_user(user_id, search_query=query)
             return {"action": "search_emails_result", "payload": {"emails": emails}}
             
@@ -157,9 +161,8 @@ async def get_accounts_status(request: Request):
         accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
         accounts = [doc.id for doc in accounts_ref.stream()]
         return {"connected": accounts}
-    except Exception as e: return {"connected": []}
+    except Exception: return {"connected": []}
 
-# --- 5. ENDPOINTS DE OAUTH2 ---
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI_GOOGLE = "https://agent-flow-backend-drab.vercel.app/google/callback"
@@ -167,7 +170,6 @@ REDIRECT_URI_GOOGLE = "https://agent-flow-backend-drab.vercel.app/google/callbac
 @app.get("/auth/google")
 async def auth_google(request: Request):
     id_token = request.query_params.get("token")
-    if not id_token: raise HTTPException(status_code=400, detail="Falta el token de usuario.")
     scope = "https://www.googleapis.com/auth/gmail.readonly"
     url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={REDIRECT_URI_GOOGLE}"
            f"&response_type=code&scope={scope}&access_type=offline&prompt=consent&state={id_token}")
@@ -178,8 +180,6 @@ async def google_callback(request: Request):
     initialize_firebase_admin_once()
     if not db: raise HTTPException(status_code=500, detail="Base de datos no disponible.")
     id_token = request.query_params.get("state"); code = request.query_params.get("code")
-    if not id_token or not code: raise HTTPException(status_code=400, detail="Falta información en el callback.")
-
     try:
         user_id = auth.verify_id_token(id_token)["uid"]
         token_url = "https://oauth2.googleapis.com/token"
@@ -190,5 +190,4 @@ async def google_callback(request: Request):
         user_ref = db.collection("users").document(user_id)
         user_ref.collection("connected_accounts").document("google").set(tokens)
         return JSONResponse(content={"status": "Cuenta de Google conectada. Puedes cerrar esta ventana."})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
+    except Exception as e: raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
