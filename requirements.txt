@@ -1,4 +1,8 @@
+# requirements.txt
 fastapi
-pydantic
+uvicorn
 google-generativeai
 firebase-admin
+requests
+google-api-python-client
+google-auth-oauthlib
