@@ -52,16 +52,38 @@ def verify_token(f):
 # --- 3. LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
     model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    
+    # [LA CORRECCIÓN] Este prompt es ahora a prueba de fallos.
     prompt = f"""
-    Analiza: "{text}". Extrae 'action' ("summarize_inbox", "search_emails", "create_draft") y 'parameters' ("client_name", "time_period", "recipient", "content_summary") en JSON.
-    Ejemplo 1: "resume correos de acme" -> {{"action": "summarize_inbox", "parameters": {{"client_name": "acme"}}}}
-    Ejemplo 2: "escribe a jefe@empresa.com que el informe está listo" -> {{"action": "create_draft", "parameters": {{"recipient": "jefe@empresa.com", "content_summary": "informar que el informe está listo"}}}}
-    Responde SÓLO con el JSON.
+    Analiza el texto y clasifícalo en una de tres acciones: "summarize_inbox", "search_emails", "create_draft".
+    Extrae los parámetros: "recipient" (solo si es un email), "content_summary" (el resto del texto).
+    Si el texto no encaja en ninguna acción, devuelve "unknown".
+    RESPONDE SÓLO CON JSON.
+
+    TEXTO: "{text}"
+
+    EJEMPLO 1:
+    Texto: "resume mis correos de hoy"
+    JSON: {{"action": "summarize_inbox", "parameters": {{"time_period": "today"}}}}
+
+    EJEMPLO 2:
+    Texto: "escribe a jefe@empresa.com que el informe está listo"
+    JSON: {{"action": "create_draft", "parameters": {{"recipient": "jefe@empresa.com", "content_summary": "informar que el informe está listo"}}}}
+    
+    EJEMPLO 3:
+    Texto: "el cielo es azul"
+    JSON: {{"action": "unknown", "parameters": {{}}}}
     """
+    
     try:
-        response = model.generate_content(prompt)
+        safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        print(f"Respuesta cruda de Gemini (Intención): {response.text}")
         return json.loads(response.text)
-    except Exception as e: return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
+    except Exception as e:
+        print(f"Error en Gemini interpretando intención: {e}")
+        # Si todo lo demás falla, devolvemos un error claro.
+        return {"action": "error", "parameters": {"message": "La IA no pudo interpretar el comando."}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
     content_summary = params.get("content_summary", "Contenido no especificado.")
