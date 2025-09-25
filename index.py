@@ -59,9 +59,14 @@ def interpret_intent_with_gemini(text: str) -> dict:
     Responde SÓLO con el JSON.
     """
     try:
-        response = model.generate_content(prompt)
-        return json.loads(response.text)
-    except Exception as e: return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
+        safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        if not clean_text: raise ValueError("Gemini returned an empty response.")
+        return json.loads(clean_text)
+    except Exception as e:
+        print(f"Error en Gemini interpretando: {e}")
+        return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
     content_summary = params.get("content_summary", "No se especificó contenido.")
@@ -72,9 +77,16 @@ def generate_draft_with_gemini(params: dict) -> dict:
     Formato de respuesta: JSON estricto con las claves "subject" y "body".
     Ejemplo: {{"subject": "Actualización del Informe", "body": "Hola,\\n\\nSolo para confirmarte que el informe está casi listo. Lo tendrás mañana a primera hora.\\n\\nSaludos,\\nAura"}}
     """
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
-    response = model.generate_content(prompt)
-    return json.loads(response.text)
+    try:
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        if not clean_text: raise ValueError("Gemini returned an empty response for draft generation.")
+        return json.loads(clean_text)
+    except Exception as e:
+        print(f"Error generando borrador con Gemini: {e}")
+        return {"subject": "Error de la IA", "body": f"No se pudo generar el borrador.\nError: {e}"}
 
 def get_gmail_service(user_id: str, write_permission: bool = False):
     if not db: raise Exception("Base de datos no disponible.")
