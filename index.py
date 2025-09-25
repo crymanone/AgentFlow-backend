@@ -18,7 +18,6 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # --- 1. INICIALIZACIÓN DE SERVICIOS ---
 db = None
-gemini_model = None
 
 def initialize_firebase_admin_once():
     global db
@@ -36,10 +35,9 @@ def initialize_firebase_admin_once():
 try:
     api_key = os.environ["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    print("API de Gemini y modelo inicializados.")
+    print("API de Gemini configurada.")
 except Exception as e:
-    print(f"ADVERTENCIA: No se pudo inicializar Gemini. Error: {e}")
+    print(f"ADVERTENCIA: No se pudo configurar Gemini. Error: {e}")
 
 app = FastAPI(title="AgentFlow Production Backend v5.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -59,31 +57,34 @@ def verify_token(f):
 
 # --- 3. LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
-    if not gemini_model: raise Exception("Modelo de Gemini no inicializado.")
-    prompt = f"""
-    Analiza: "{text}". Extrae 'action' ("summarize_inbox", "search_emails", "create_draft") y 'parameters' ("client_name", "time_period", "recipient", "content_summary") en JSON.
-    Ejemplo 1: "resume correos de acme" -> {{"action": "summarize_inbox", "parameters": {{"client_name": "acme"}}}}
-    Ejemplo 2: "escribe a jefe@empresa.com que el informe está listo" -> {{"action": "create_draft", "parameters": {{"recipient": "jefe@empresa.com", "content_summary": "informar que el informe está listo"}}}}
-    Responde SÓLO con el JSON.
-    """
     try:
-        response = gemini_model.generate_content(prompt)
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        prompt = f"""
+        Analiza: "{text}". Extrae 'action' ("summarize_inbox", "search_emails", "create_draft") y 'parameters' ("client_name", "time_period", "recipient", "content_summary") en JSON.
+        Ejemplo 1: "resume correos de acme" -> {{"action": "summarize_inbox", "parameters": {{"client_name": "acme"}}}}
+        Ejemplo 2: "escribe a jefe@empresa.com que el informe está listo" -> {{"action": "create_draft", "parameters": {{"recipient": "jefe@empresa.com", "content_summary": "informar que el informe está listo"}}}}
+        Responde SÓLO con el JSON.
+        """
+        response = model.generate_content(prompt)
         return json.loads(response.text)
     except Exception as e:
         return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
-    if not gemini_model: raise Exception("Modelo de Gemini no inicializado.")
-    content_summary = params.get("content_summary", "No se especificó contenido.")
-    prompt = f"""
-    Actúa como Aura, una asistente de IA profesional. Tu tarea es escribir un correo electrónico.
-    OBJETIVO DEL CORREO: "{content_summary}"
-    Escribe un correo que sea claro, conciso y profesional. No incluyas el destinatario (To:).
-    Formato de respuesta: JSON estricto con las claves "subject" y "body".
-    Ejemplo: {{"subject": "Actualización del Informe", "body": "Hola,\\n\\nSolo para confirmarte que el informe está casi listo. Lo tendrás mañana a primera hora.\\n\\nSaludos,\\nAura"}}
-    """
-    response = gemini_model.generate_content(prompt)
-    return json.loads(response.text)
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        content_summary = params.get("content_summary", "No se especificó contenido.")
+        prompt = f"""
+        Actúa como Aura, una asistente de IA profesional. Tu tarea es escribir un correo electrónico.
+        OBJETIVO DEL CORREO: "{content_summary}"
+        Escribe un correo que sea claro, conciso y profesional. No incluyas el destinatario (To:).
+        Formato de respuesta: JSON estricto con las claves "subject" y "body".
+        Ejemplo: {{"subject": "Actualización del Informe", "body": "Hola,\\n\\nSolo para confirmarte que el informe está casi listo. Lo tendrás mañana a primera hora.\\n\\nSaludos,\\nAura"}}
+        """
+        response = model.generate_content(prompt)
+        return json.loads(response.text)
+    except Exception as e:
+        return {"subject": "Error de IA", "body": f"No se pudo generar el borrador. Error: {e}"}
     
 def get_gmail_service(user_id: str, write_permission: bool = False):
     if not db: raise Exception("Base de datos no disponible.")
@@ -130,9 +131,9 @@ def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
         raise Exception(f"Error de API de Gmail: {error.reason}")
 
 def summarize_emails_with_gemini(emails: list) -> str:
-    if not gemini_model: raise Exception("Modelo de Gemini no inicializado.")
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
-    response = gemini_model.generate_content(prompt)
+    response = model.generate_content(prompt)
     return response.text.strip()
     
 def create_draft_in_gmail(user_id: str, draft_data: dict):
