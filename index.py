@@ -2,11 +2,11 @@ import os
 import json
 from functools import wraps
 import base64
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-from datetime import datetime, timedelta, timezone
 
 # --- SDKs ---
 import google.generativeai as genai
@@ -35,7 +35,7 @@ try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 except KeyError: print("ADVERTENCIA: API Key de Gemini no encontrada.")
 
-app = FastAPI(title="AgentFlow Production Backend v5.0")
+app = FastAPI(title="AgentFlow Production Backend v5.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- 2. DECORADOR DE AUTENTICACIÓN ---
@@ -51,7 +51,6 @@ def verify_token(f):
     return decorated
 
 # --- 3. LÓGICA DE IA Y DATOS ---
-
 def interpret_intent_with_gemini(text: str) -> dict:
     model = genai.GenerativeModel('gemini-1.5-pro-latest')
     prompt = f"""
@@ -97,8 +96,6 @@ def get_google_service(user_id: str, service_name: str, version: str, scopes: li
         doc_ref.update({"access_token": creds.token})
     
     return build(service_name, version, credentials=creds)
-    
-    return build('gmail', 'v1', credentials=creds)
 
 def translate_params_to_gmail_query(params: dict) -> str:
     query_parts = []
@@ -108,10 +105,10 @@ def translate_params_to_gmail_query(params: dict) -> str:
         query_parts.append(period_map.get(params["time_period"], ""))
     query_parts.extend(["-in:trash", "-in:spam"])
     return " ".join(filter(None, query_parts))
-
+    
 def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
     try:
-        service = get_gmail_service(user_id, write_permission=False)
+        service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.readonly"])
         results = service.users().messages().list(userId='me', q=search_query, maxResults=10).execute()
         messages = results.get('messages', [])
         emails_list = []
@@ -133,7 +130,7 @@ def summarize_emails_with_gemini(emails: list) -> str:
     
 def create_draft_in_gmail(user_id: str, draft_data: dict):
     try:
-        service = get_gmail_service(user_id, write_permission=True)
+        service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.compose"])
         message_body = (f"To: {draft_data['to']}\n"
                         f"Subject: {draft_data['subject']}\n\n"
                         f"{draft_data['body']}")
@@ -144,36 +141,32 @@ def create_draft_in_gmail(user_id: str, draft_data: dict):
     except HttpError as error:
         raise Exception(f"Error de API de Gmail al crear borrador: {error.reason}")
 
-def send_draft_from_gmail(user_id: str, draft_id: str):
-    try:
-        service = get_gmail_service(user_id, write_permission=True)
-        sent_message = service.users().drafts().send(userId='me', body={'id': draft_id}).execute()
-        return sent_message
-    except HttpError as error:
-        raise Exception(f"Error de API de Gmail al enviar borrador: {error.reason}")
-        
 def find_contact_in_google(user_id: str, contact_name: str):
     try:
-        people_service = get_google_service(user_id, 'people', 'v1', scopes=["https://www.googleapis.com/auth/contacts.readonly"])
-        results = people_service.people().searchContacts(query=contact_name, readMask="emailAddresses,names").execute()
+        service = get_google_service(user_id, 'people', 'v1', scopes=["https://www.googleapis.com/auth/contacts.readonly"])
+        results = service.people().searchContacts(query=contact_name, readMask="emailAddresses,names").execute()
         contacts = results.get('results', [])
-        if not contacts: return {"message": f"No se encontró a nadie llamado '{contact_name}'."}
+        if not contacts:
+            return {"type": "not_found", "data": {"message": f"No se encontró a nadie llamado '{contact_name}'."}}
+        if len(contacts) > 1:
+            options = [{"name": p.get('person', {}).get('names', [{}])[0].get('displayName', 'N/A'),
+                        "email": p.get('person', {}).get('emailAddresses', [{}])[0].get('value', 'N/A')}
+                       for p in contacts]
+            return {"type": "disambiguation", "data": {"question": "¿A cuál te refieres?", "options": options}}
         person = contacts[0].get('person', {}); name = person.get('names', [{}])[0].get('displayName', 'N/A'); email = person.get('emailAddresses', [{}])[0].get('value', 'N/A')
-        return {"name": name, "email": email}
+        return {"type": "found", "data": {"name": name, "email": email}}
     except HttpError as error: raise Exception(f"Error de API de Contactos: {error.reason}")
 
 def get_calendar_events(user_id: str):
     try:
-        calendar_service = get_google_service(user_id, 'calendar', 'v3', scopes=["https://www.googleapis.com/auth/calendar.readonly"])
+        service = get_google_service(user_id, 'calendar', 'v3', scopes=["https://www.googleapis.com/auth/calendar.readonly"])
         now = datetime.utcnow().isoformat() + 'Z'
-        events_result = calendar_service.events().list(calendarId='primary', timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
+        events_result = service.events().list(calendarId='primary', timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
         events = events_result.get('items', [])
         if not events: return {"message": "No tienes próximos eventos."}
-        event_list = [f"- {event['summary']} (at {event['start'].get('dateTime', event['start'].get('date'))})" for event in events]
+        event_list = [f"- {event['summary']} (a las {datetime.fromisoformat(event['start'].get('dateTime')).strftime('%H:%M')})" for event in events]
         return {"events": "\n".join(event_list)}
     except HttpError as error: raise Exception(f"Error de API de Calendario: {error.reason}")
-
-
 
 # --- 4. ENDPOINTS DE LA API ---
 @app.get("/")
@@ -186,28 +179,32 @@ async def voice_command(request: Request, data: dict):
     intent = interpret_intent_with_gemini(text); action = intent.get("action"); params = intent.get("parameters", {})
     try:
         if action == "summarize_inbox" or action == "search_emails":
-            # (Lógica sin cambios)
+            query = translate_params_to_gmail_query(params)
+            emails = get_real_emails_for_user(user_id, search_query=query)
+            if action == "summarize_inbox":
+                if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
+                summary = summarize_emails_with_gemini(emails)
+                return {"action": "summarize_inbox", "payload": {"summary": summary}}
+            else:
+                return {"action": "search_emails_result", "payload": {"emails": emails}}
         elif action == "create_draft":
-            # (Lógica sin cambios)
+            email_content = generate_draft_with_gemini(params)
+            full_draft_data = {"to": params.get("recipient"), "subject": email_content.get("subject"), "body": email_content.get("body")}
+            created_draft = create_draft_in_gmail(user_id, full_draft_data)
+            full_draft_data['id'] = created_draft.get('id')
+            return {"action": "draft_created", "payload": {"draft": full_draft_data}}
         elif action == "find_contact":
-            contact_info = find_contact_in_google(user_id, params.get("contact_name"))
-            return {"action": "contact_found", "payload": contact_info}
+            contact_result = find_contact_in_google(user_id, params.get("contact_name"))
+            if contact_result["type"] == "disambiguation":
+                return {"action": "ask", "payload": contact_result["data"]}
+            else:
+                return {"action": "contact_found", "payload": contact_result["data"]}
         elif action == "check_availability":
             events = get_calendar_events(user_id)
             return {"action": "availability_checked", "payload": events}
         elif action == "error": return {"action": "error", "payload": params}
         else: return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
     except Exception as e: return {"action": "error", "payload": {"message": str(e)}}
-
-@app.post("/api/drafts/send/{draft_id}")
-@verify_token
-async def send_draft(request: Request, draft_id: str):
-    user_id = request.state.user["uid"]
-    try:
-        sent_message = send_draft_from_gmail(user_id, draft_id)
-        return {"status": "success", "message_id": sent_message.get('id')}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/accounts/status")
 @verify_token
@@ -230,13 +227,12 @@ async def auth_google(request: Request):
     id_token = request.query_params.get("token")
     scopes = [
         "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
         "https://www.googleapis.com/auth/contacts.readonly"
     ]
     scope_string = " ".join(scopes)
-    url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={os.environ.get('GOOGLE_CLIENT_ID')}"
-           f"&redirect_uri={os.environ.get('REDIRECT_URI_GOOGLE')}&response_type=code&scope={scope_string}"
-           f"&access_type=offline&prompt=consent&state={id_token}")
+    url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={REDIRECT_URI_GOOGLE}"
+           f"&response_type=code&scope={scope_string}&access_type=offline&prompt=consent&state={id_token}")
     return RedirectResponse(url=url)
 
 @app.get("/google/callback")
