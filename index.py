@@ -58,7 +58,7 @@ def verify_token(f):
 # --- 3. LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         prompt = f"""
         Analiza: "{text}". Extrae 'action' ("summarize_inbox", "search_emails", "create_draft") y 'parameters' ("client_name", "time_period", "recipient", "content_summary") en JSON.
         Ejemplo 1: "resume correos de acme" -> {{"action": "summarize_inbox", "parameters": {{"client_name": "acme"}}}}
@@ -72,7 +72,7 @@ def interpret_intent_with_gemini(text: str) -> dict:
 
 def generate_draft_with_gemini(params: dict) -> dict:
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         content_summary = params.get("content_summary", "No se especificó contenido.")
         prompt = f"""
         Actúa como Aura, una asistente de IA profesional. Tu tarea es escribir un correo electrónico.
@@ -131,7 +131,7 @@ def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
         raise Exception(f"Error de API de Gmail: {error.reason}")
 
 def summarize_emails_with_gemini(emails: list) -> str:
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
     response = model.generate_content(prompt)
     return response.text.strip()
