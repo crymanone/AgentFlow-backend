@@ -76,10 +76,13 @@ def interpret_intent_with_gemini(text: str) -> dict:
     """
     
     try:
-        safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
-        response = model.generate_content(prompt, safety_settings=safety_settings)
+        response = model.generate_content(prompt)
         print(f"Respuesta cruda de Gemini (Intención): {response.text}")
-        return json.loads(response.text)
+        
+        # [LA CORRECCIÓN] Limpieza agresiva de Markdown
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        
+        return json.loads(clean_text)
     except Exception as e:
         print(f"Error en Gemini interpretando intención: {e}")
         # Si todo lo demás falla, devolvemos un error claro.
@@ -102,17 +105,13 @@ def generate_draft_with_gemini(params: dict) -> dict:
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
-        # Añadimos un "safety setting" para ser menos restrictivos. A veces ayuda.
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
         response = model.generate_content(prompt, safety_settings=safety_settings)
         print(f"Respuesta cruda de Gemini (Redacción): {response.text}")
-        return json.loads(response.text)
+        
+        # [LA CORRECCIÓN] Limpieza agresiva de Markdown
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+
+        return json.loads(clean_text)
     except Exception as e:
         print(f"Error generando borrador con Gemini: {e}")
         # Devolvemos un borrador de error si la IA falla
