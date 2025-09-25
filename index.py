@@ -145,9 +145,25 @@ async def voice_command(request: Request, data: dict):
 @app.get("/auth/google")
 async def auth_google(request: Request):
     id_token = request.query_params.get("token")
-    scope = "https://www.googleapis.com/auth/gmail.compose" # <--- PERMISO ACTUALIZADO
-    url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={os.environ.get('GOOGLE_CLIENT_ID')}&redirect_uri={os.environ.get('REDIRECT_URI_GOOGLE')}"
+    
+    # [DEPURACIÓN] Vamos a imprimir las variables para ver qué está leyendo Vercel
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    redirect_uri = os.environ.get("REDIRECT_URI_GOOGLE")
+    print(f"--- INICIANDO FLUJO OAUTH ---")
+    print(f"Client ID: {client_id}")
+    print(f"Redirect URI: {redirect_uri}")
+    print(f"Token (state): {'Sí' if id_token else 'No'}")
+    
+    if not client_id or not redirect_uri:
+        raise HTTPException(status_code=500, detail="Faltan variables de entorno del servidor (CLIENT_ID o REDIRECT_URI).")
+    
+    if not id_token:
+        raise HTTPException(status_code=400, detail="Falta el token de usuario.")
+        
+    scope = "https://www.googleapis.com/auth/gmail.readonly"
+    url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={redirect_uri}"
            f"&response_type=code&scope={scope}&access_type=offline&prompt=consent&state={id_token}")
+    
     return RedirectResponse(url=url)
 
 @app.get("/api/accounts/status")
