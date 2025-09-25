@@ -136,30 +136,44 @@ def root(): return {"status": "AgentFlow Backend Activo"}
 @app.post("/api/voice-command")
 @verify_token
 async def voice_command(request: Request, data: dict):
-    user_id = request.state.user["uid"]; text = data.get("text", "")
-    intent = interpret_intent_with_gemini(text); action = intent.get("action"); params = intent.get("parameters", {})
+    user_id = request.state.user["uid"]
+    text = data.get("text", "")
+    
     try:
-        query = translate_params_to_gmail_query(params) # Usamos una función dummy aquí
-        if action == "summarize_inbox":
+        intent = interpret_intent_with_gemini(text)
+        action = intent.get("action")
+        params = intent.get("parameters", {})
+
+        if action == "summarize_inbox" or action == "search_emails":
+            query = translate_params_to_gmail_query(params)
             emails = get_real_emails_for_user(user_id, search_query=query)
-            if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
-            summary = summarize_emails_with_gemini(emails)
-            return {"action": "summarize_inbox", "payload": {"summary": summary}}
-        
-        elif action == "search_emails":
-            emails = get_real_emails_for_user(user_id, search_query=query)
-            return {"action": "search_emails_result", "payload": {"emails": emails}}
             
+            if action == "summarize_inbox":
+                if not emails:
+                    return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
+                summary = summarize_emails_with_gemini(emails)
+                return {"action": "summarize_inbox", "payload": {"summary": summary}}
+            else: # search_emails
+                return {"action": "search_emails_result", "payload": {"emails": emails}}
+        
         elif action == "create_draft":
             email_content = generate_draft_with_gemini(params)
-            full_draft_data = {"to": params.get("recipient"), "subject": email_content.get("subject"), "body": email_content.get("body")}
+            full_draft_data = {
+                "to": params.get("recipient"),
+                "subject": email_content.get("subject"),
+                "body": email_content.get("body")
+            }
             created_draft = create_draft_in_gmail(user_id, full_draft_data)
             full_draft_data['id'] = created_draft.get('id')
             return {"action": "draft_created", "payload": {"draft": full_draft_data}}
 
-        elif action == "error": return {"action": "error", "payload": params}
-        else: return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
-    except Exception as e: return {"action": "error", "payload": {"message": str(e)}}
+        elif action == "error":
+            return {"action": "error", "payload": params}
+        else:
+            return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
+            
+    except Exception as e:
+        return {"action": "error", "payload": {"message": str(e)}}
 
 @app.get("/api/accounts/status")
 @verify_token
