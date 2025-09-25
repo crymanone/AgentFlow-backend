@@ -33,7 +33,7 @@ try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 except KeyError: print("ADVERTENCIA: API Key de Gemini no encontrada.")
 
-app = FastAPI(title="AgentFlow Production Backend v4.4")
+app = FastAPI(title="AgentFlow Production Backend v4.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- 2. DECORADOR DE AUTENTICACIÓN ---
@@ -72,7 +72,6 @@ def translate_params_to_gmail_query(params: dict) -> str:
     if params.get("time_period"):
         period_map = {"hoy": "newer_than:1d", "ayer": "older_than:1d newer_than:2d", "last week": "newer_than:7d", "ultimo mes": "newer_than:30d"}
         query_parts.append(period_map.get(params["time_period"], ""))
-    # [LA MEJORA] Búsqueda global por defecto
     query_parts.extend(["-in:trash", "-in:spam"])
     return " ".join(filter(None, query_parts))
 
@@ -92,7 +91,6 @@ def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
 
     try:
         service = build('gmail', 'v1', credentials=creds)
-        # [LA MEJORA] Siempre usamos el parámetro 'q' para una lógica unificada
         results = service.users().messages().list(userId='me', q=search_query, maxResults=10).execute()
         messages = results.get('messages', [])
         emails_list = []
@@ -122,15 +120,18 @@ async def voice_command(request: Request, data: dict):
     user_id = request.state.user["uid"]; text = data.get("text", "")
     intent = interpret_intent_with_gemini(text); action = intent.get("action"); params = intent.get("parameters", {})
     try:
-        query = translate_params_to_gmail_query(params)
-        if action == "summarize_inbox" or action == "search_emails":
+        if action == "summarize_inbox":
+            query = translate_params_to_gmail_query(params) # Usar parámetros también para resumir
             emails = get_real_emails_for_user(user_id, search_query=query)
-            if action == "summarize_inbox":
-                if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
-                summary = summarize_emails_with_gemini(emails)
-                return {"action": "summarize_inbox", "payload": {"summary": summary}}
-            else: # search_emails
-                return {"action": "search_emails_result", "payload": {"emails": emails}}
+            if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan con tu petición."}}
+            summary = summarize_emails_with_gemini(emails)
+            return {"action": "summarize_inbox", "payload": {"summary": summary}}
+        
+        elif action == "search_emails":
+            query = translate_params_to_gmail_query(params)
+            emails = get_real_emails_for_user(user_id, search_query=query)
+            return {"action": "search_emails_result", "payload": {"emails": emails}}
+            
         elif action == "error": return {"action": "error", "payload": params}
         else: return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
     except Exception as e: return {"action": "error", "payload": {"message": str(e)}}
