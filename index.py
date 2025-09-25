@@ -105,6 +105,7 @@ def generate_draft_with_gemini(params: dict) -> dict:
     """
     
     try:
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
         response = model.generate_content(prompt, safety_settings=safety_settings)
         print(f"Respuesta cruda de Gemini (Redacción): {response.text}")
         
