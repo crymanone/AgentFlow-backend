@@ -22,12 +22,14 @@ def initialize_firebase_admin_once():
     global db
     if not firebase_admin._apps:
         try:
-            cred_json_str = os.environ["FIREBASE_ADMIN_SDK_JSON"]
+            # Confiamos en que Vercel inyecta las variables
+            cred_json_str = os.environ["FIREBASE_ADMIN_SDK_JSON"] 
             cred_dict = json.loads(cred_json_str)
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
             db = firestore.client()
-        except Exception as e: print(f"ERROR CRÍTICO inicializando Firebase Admin: {e}")
+        except Exception as e:
+            print(f"ERROR CRÍTICO inicializando Firebase Admin: {e}")
 
 try: genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 except KeyError: print("ADVERTENCIA: API Key de Gemini no encontrada.")
@@ -146,24 +148,15 @@ async def voice_command(request: Request, data: dict):
 async def auth_google(request: Request):
     id_token = request.query_params.get("token")
     
-    # [DEPURACIÓN] Vamos a imprimir las variables para ver qué está leyendo Vercel
-    client_id = os.environ.get("GOOGLE_CLIENT_ID")
-    redirect_uri = os.environ.get("REDIRECT_URI_GOOGLE")
-    print(f"--- INICIANDO FLUJO OAUTH ---")
-    print(f"Client ID: {client_id}")
-    print(f"Redirect URI: {redirect_uri}")
-    print(f"Token (state): {'Sí' if id_token else 'No'}")
-    
-    if not client_id or not redirect_uri:
-        raise HTTPException(status_code=500, detail="Faltan variables de entorno del servidor (CLIENT_ID o REDIRECT_URI).")
-    
-    if not id_token:
-        raise HTTPException(status_code=400, detail="Falta el token de usuario.")
-        
+    # [LA CORRECCIÓN] Leemos directamente, si falla aquí, lo veremos en los logs
+    client_id = os.environ["GOOGLE_CLIENT_ID"]
+    redirect_uri = os.environ["REDIRECT_URI_GOOGLE"] # Asumimos que esta también está
+
+    print(f"--- OAUTH CON CLIENT ID: {client_id[:5]}... ---") # Imprimimos los 5 primeros caracteres
+
     scope = "https://www.googleapis.com/auth/gmail.readonly"
     url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}&redirect_uri={redirect_uri}"
            f"&response_type=code&scope={scope}&access_type=offline&prompt=consent&state={id_token}")
-    
     return RedirectResponse(url=url)
 
 @app.get("/api/accounts/status")
