@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 
-# --- SDKs ---
+# --- SDKs de Google y Firebase ---
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
@@ -75,7 +75,7 @@ def generate_draft_with_gemini(params: dict) -> dict:
     model = genai.GenerativeModel('gemini-1.5-pro-latest')
     response = model.generate_content(prompt)
     return json.loads(response.text)
-    
+
 def get_gmail_service(user_id: str, write_permission: bool = False):
     if not db: raise Exception("Base de datos no disponible.")
     doc_ref = db.collection("users").document(user_id).collection("connected_accounts").document("google")
@@ -93,6 +93,37 @@ def get_gmail_service(user_id: str, write_permission: bool = False):
     
     return build('gmail', 'v1', credentials=creds)
 
+def translate_params_to_gmail_query(params: dict) -> str:
+    query_parts = []
+    if params.get("client_name"): query_parts.append(f'from:"{params["client_name"]}"')
+    if params.get("time_period"):
+        period_map = {"hoy": "newer_than:1d", "ayer": "older_than:1d newer_than:2d", "last week": "newer_than:7d", "ultimo mes": "newer_than:30d"}
+        query_parts.append(period_map.get(params["time_period"], ""))
+    query_parts.extend(["-in:trash", "-in:spam"])
+    return " ".join(filter(None, query_parts))
+
+def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
+    try:
+        service = get_gmail_service(user_id, write_permission=False)
+        results = service.users().messages().list(userId='me', q=search_query, maxResults=10).execute()
+        messages = results.get('messages', [])
+        emails_list = []
+        if messages:
+            for message in messages:
+                msg = service.users().messages().get(userId='me', id=message['id'], format='metadata', metadataHeaders=['From', 'Subject']).execute()
+                headers = msg.get('payload', {}).get('headers', [])
+                subject = next((i['value'] for i in headers if i['name'] == 'Subject'), 'Sin Asunto')
+                sender = next((i['value'] for i in headers if i['name'] == 'From'), 'Desconocido')
+                emails_list.append({"from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
+        return emails_list
+    except HttpError as error: raise Exception(f"Error de API de Gmail: {error.reason}")
+
+def summarize_emails_with_gemini(emails: list) -> str:
+    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    response = model.generate_content(prompt)
+    return response.text.strip()
+    
 def create_draft_in_gmail(user_id: str, draft_data: dict):
     try:
         service = get_gmail_service(user_id, write_permission=True)
@@ -115,23 +146,35 @@ def send_draft_from_gmail(user_id: str, draft_id: str):
         raise Exception(f"Error de API de Gmail al enviar borrador: {error.reason}")
 
 # --- 4. ENDPOINTS DE LA API ---
+@app.get("/")
+def root(): return {"status": "AgentFlow Backend Activo"}
+
 @app.post("/api/voice-command")
 @verify_token
 async def voice_command(request: Request, data: dict):
     user_id = request.state.user["uid"]; text = data.get("text", "")
     intent = interpret_intent_with_gemini(text); action = intent.get("action"); params = intent.get("parameters", {})
     try:
-        if action == "create_draft":
+        if action == "summarize_inbox" or action == "search_emails":
+            query = translate_params_to_gmail_query(params)
+            emails = get_real_emails_for_user(user_id, search_query=query)
+            if action == "summarize_inbox":
+                if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
+                summary = summarize_emails_with_gemini(emails)
+                return {"action": "summarize_inbox", "payload": {"summary": summary}}
+            else: # search_emails
+                return {"action": "search_emails_result", "payload": {"emails": emails}}
+        
+        elif action == "create_draft":
             email_content = generate_draft_with_gemini(params)
             full_draft_data = {"to": params.get("recipient"), "subject": email_content.get("subject"), "body": email_content.get("body")}
             created_draft = create_draft_in_gmail(user_id, full_draft_data)
             full_draft_data['id'] = created_draft.get('id')
             return {"action": "draft_created", "payload": {"draft": full_draft_data}}
-        # (Aquí iría la lógica de 'summarize' y 'search' que hemos omitido por brevedad)
-        else:
-            return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
-    except Exception as e:
-        return {"action": "error", "payload": {"message": str(e)}}
+
+        elif action == "error": return {"action": "error", "payload": params}
+        else: return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
+    except Exception as e: return {"action": "error", "payload": {"message": str(e)}}
 
 @app.post("/api/drafts/send/{draft_id}")
 @verify_token
@@ -143,16 +186,18 @@ async def send_draft(request: Request, draft_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- (El resto de endpoints no han cambiado y se omiten por brevedad) ---
-@app.get("/")
-def root(): return {"status": "AgentFlow Backend Activo"}
-
 @app.get("/api/accounts/status")
 @verify_token
 async def get_accounts_status(request: Request):
-    user_id = request.state.user["uid"]; #...
-    return {"connected": []} # Placeholder
+    user_id = request.state.user["uid"]
+    if not db: raise HTTPException(status_code=500, detail="Base de datos no disponible.")
+    try:
+        accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
+        accounts = [doc.id for doc in accounts_ref.stream()]
+        return {"connected": accounts}
+    except Exception: return {"connected": []}
 
+# --- 5. ENDPOINTS DE OAUTH2 ---
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI_GOOGLE = "https://agent-flow-backend-drab.vercel.app/google/callback"
@@ -168,6 +213,7 @@ async def auth_google(request: Request):
 @app.get("/google/callback")
 async def google_callback(request: Request):
     initialize_firebase_admin_once()
+    if not db: raise HTTPException(status_code=500, detail="Base de datos no disponible.")
     id_token = request.query_params.get("state"); code = request.query_params.get("code")
     try:
         user_id = auth.verify_id_token(id_token)["uid"]
@@ -178,6 +224,6 @@ async def google_callback(request: Request):
         
         user_ref = db.collection("users").document(user_id)
         user_ref.collection("connected_accounts").document("google").set(tokens)
-        return JSONResponse(content={"status": "Cuenta de Google conectada."})
+        return JSONResponse(content={"status": "Cuenta de Google conectada. Puedes cerrar esta ventana."})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
