@@ -52,7 +52,7 @@ def verify_token(f):
 
 # --- 3. LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     prompt = f"""
     Analiza: "{text}". Extrae 'action' y 'parameters' en JSON.
     ACCIONES: "summarize_inbox", "search_emails", "create_draft", "find_contact", "check_availability", "create_event", "unknown".
@@ -76,7 +76,7 @@ def generate_draft_with_gemini(params: dict) -> dict:
     Actúa como Aura. Escribe un correo profesional basado en el siguiente objetivo: "{content_summary}".
     Responde en JSON con "subject" y "body".
     """
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     response = model.generate_content(prompt)
     return json.loads(response.text)
 
