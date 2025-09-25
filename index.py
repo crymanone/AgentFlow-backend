@@ -64,17 +64,40 @@ def interpret_intent_with_gemini(text: str) -> dict:
     except Exception as e: return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
-    content_summary = params.get("content_summary", "No se especificó contenido.")
+    content_summary = params.get("content_summary", "Contenido no especificado.")
+    
+    # [LA CORRECCIÓN] Prompt mucho más específico y robusto
     prompt = f"""
-    Actúa como Aura, una asistente de IA profesional. Tu tarea es escribir un correo electrónico.
-    OBJETIVO DEL CORREO: "{content_summary}"
-    Escribe un correo que sea claro, conciso y profesional. No incluyas el destinatario (To:).
-    Formato de respuesta: JSON estricto con las claves "subject" y "body".
-    Ejemplo: {{"subject": "Actualización del Informe", "body": "Hola,\\n\\nSolo para confirmarte que el informe está casi listo. Lo tendrás mañana a primera hora.\\n\\nSaludos,\\nAura"}}
+    Tu única tarea es generar un objeto JSON con las claves "subject" y "body" para un correo electrónico profesional.
+    No añadas texto antes ni después del JSON. Tu respuesta debe empezar con {{ y terminar con }}.
+
+    El objetivo del correo es el siguiente: "{content_summary}"
+    
+    A partir de ese objetivo, crea un asunto ("subject") adecuado y un cuerpo ("body") de mensaje que sea claro, conciso y profesional. Firma el correo como "Aura".
+    
+    Ejemplo de salida esperada:
+    {{"subject": "Título del Correo", "body": "Cuerpo del mensaje...\\n\\nSaludos,\\nAura"}}
     """
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
-    response = model.generate_content(prompt)
-    return json.loads(response.text)
+    
+    try:
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        # Añadimos un "safety setting" para ser menos restrictivos. A veces ayuda.
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        print(f"Respuesta cruda de Gemini (Redacción): {response.text}")
+        return json.loads(response.text)
+    except Exception as e:
+        print(f"Error generando borrador con Gemini: {e}")
+        # Devolvemos un borrador de error si la IA falla
+        return {
+            "subject": "Error de la IA",
+            "body": f"No se pudo generar el borrador para la petición: '{content_summary}'.\nError: {e}"
+        }
     
 def get_gmail_service(user_id: str, write_permission: bool = False):
     if not db: raise Exception("Base de datos no disponible.")
