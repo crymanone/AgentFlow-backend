@@ -76,7 +76,7 @@ def generate_draft_with_gemini(params: dict) -> dict:
     Actúa como Aura. Escribe un correo profesional basado en el siguiente objetivo: "{content_summary}".
     Responde en JSON con "subject" y "body".
     """
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     response = model.generate_content(prompt)
     return json.loads(response.text)
 
@@ -124,7 +124,7 @@ def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
 
 def summarize_emails_with_gemini(emails: list) -> str:
     prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     response = model.generate_content(prompt)
     return response.text.strip()
     
