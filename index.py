@@ -57,34 +57,42 @@ def verify_token(f):
 
 # --- 3. LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
+    model = genai.GenerativeModel('gemini-2.5-pro')
+    prompt = f"""
+    Analiza: "{text}". Extrae 'action' ("summarize_inbox", "search_emails", "create_draft") y 'parameters' ("client_name", "time_period", "recipient", "content_summary") en JSON.
+    Ejemplo 1: "resume correos de acme" -> {{"action": "summarize_inbox", "parameters": {{"client_name": "acme"}}}}
+    Ejemplo 2: "escribe a jefe@empresa.com que el informe está listo" -> {{"action": "create_draft", "parameters": {{"recipient": "jefe@empresa.com", "content_summary": "informar que el informe está listo"}}}}
+    Responde SÓLO con el JSON.
+    """
     try:
-        model = genai.GenerativeModel('gemini-2.5-pro')
-        prompt = f"""
-        Analiza: "{text}". Extrae 'action' ("summarize_inbox", "search_emails", "create_draft") y 'parameters' ("client_name", "time_period", "recipient", "content_summary") en JSON.
-        Ejemplo 1: "resume correos de acme" -> {{"action": "summarize_inbox", "parameters": {{"client_name": "acme"}}}}
-        Ejemplo 2: "escribe a jefe@empresa.com que el informe está listo" -> {{"action": "create_draft", "parameters": {{"recipient": "jefe@empresa.com", "content_summary": "informar que el informe está listo"}}}}
-        Responde SÓLO con el JSON.
-        """
-        response = model.generate_content(prompt)
-        return json.loads(response.text)
+        safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        if not clean_text: raise ValueError("Gemini returned an empty response.")
+        return json.loads(clean_text)
     except Exception as e:
+        print(f"Error en Gemini interpretando: {e}")
         return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
+    content_summary = params.get("content_summary", "No se especificó contenido.")
+    prompt = f"""
+    Actúa como Aura, una asistente de IA profesional. Tu tarea es escribir un correo electrónico.
+    OBJETIVO DEL CORREO: "{content_summary}"
+    Escribe un correo que sea claro, conciso y profesional. No incluyas el destinatario (To:).
+    Formato de respuesta: JSON estricto con las claves "subject" y "body".
+    Ejemplo: {{"subject": "Actualización del Informe", "body": "Hola,\\n\\nSolo para confirmarte que el informe está casi listo. Lo tendrás mañana a primera hora.\\n\\nSaludos,\\nAura"}}
+    """
     try:
         model = genai.GenerativeModel('gemini-2.5-pro')
-        content_summary = params.get("content_summary", "No se especificó contenido.")
-        prompt = f"""
-        Actúa como Aura, una asistente de IA profesional. Tu tarea es escribir un correo electrónico.
-        OBJETIVO DEL CORREO: "{content_summary}"
-        Escribe un correo que sea claro, conciso y profesional. No incluyas el destinatario (To:).
-        Formato de respuesta: JSON estricto con las claves "subject" y "body".
-        Ejemplo: {{"subject": "Actualización del Informe", "body": "Hola,\\n\\nSolo para confirmarte que el informe está casi listo. Lo tendrás mañana a primera hora.\\n\\nSaludos,\\nAura"}}
-        """
-        response = model.generate_content(prompt)
-        return json.loads(response.text)
+        safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        if not clean_text: raise ValueError("Gemini returned an empty response for draft generation.")
+        return json.loads(clean_text)
     except Exception as e:
-        return {"subject": "Error de IA", "body": f"No se pudo generar el borrador. Error: {e}"}
+        print(f"Error generando borrador con Gemini: {e}")
+        return {"subject": "Error de la IA", "body": f"No se pudo generar el borrador.\nError: {e}"}
     
 def get_gmail_service(user_id: str, write_permission: bool = False):
     if not db: raise Exception("Base de datos no disponible.")
