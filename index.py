@@ -149,3 +149,18 @@ async def auth_google(request: Request):
     url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={os.environ.get('GOOGLE_CLIENT_ID')}&redirect_uri={os.environ.get('REDIRECT_URI_GOOGLE')}"
            f"&response_type=code&scope={scope}&access_type=offline&prompt=consent&state={id_token}")
     return RedirectResponse(url=url)
+
+@app.get("/api/accounts/status")
+@verify_token
+async def get_accounts_status(request: Request):
+    user_id = request.state.user["uid"]
+    if not db:
+        raise HTTPException(status_code=500, detail="Base de datos no disponible.")
+    try:
+        accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
+        accounts = [doc.id for doc in accounts_ref.stream()]
+        print(f"Cuentas encontradas para {user_id}: {accounts}")
+        return {"connected": accounts}
+    except Exception as e:
+        print(f"Error al obtener estado de cuentas para {user_id}: {e}")
+        return {"connected": []}    
