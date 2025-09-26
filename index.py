@@ -236,13 +236,23 @@ def execute_tool_call(user_input: str, user_id: str):
         tool_choice="auto"
     )
     
-    # ... (Lógica para manejar la respuesta de la IA)
-    # Si la IA pide llamar a una herramienta (ej: 'create_event')...
-    if tool_call.name == "create_event":
-        # ... Si falta el email, llamamos a find_contact primero ...
-        if not attendee_email:
-            # ... Si find_contact devuelve varios, respondemos con 'ask'
-            return {"action": "ask", "payload": {"question": "¿A cuál te refieres?", "options": [...]}}   
+    response_message = response.choices[0].message
+    tool_calls = response_message.tool_calls # <--- La respuesta puede tener MÚLTIPLES tool_calls
+
+    # [LA CORRECCIÓN]
+    # Verificamos si hay tool_calls y procesamos el primero
+    if tool_calls:
+        tool_call = tool_calls[0] # <--- Definimos la variable aquí
+        
+        if tool_call.function.name == "create_event":
+            # ... (Lógica para manejar 'create_event')
+            # ... (Si falta el email, llamamos a find_contact)
+            
+            # Placeholder para el éxito
+            return {"action": "event_created", "payload": {"message": "¡Evento creado con éxito! (Simulación)"}}
+
+    # Si no hay tool_calls, devolvemos 'unknown'
+    return {"action": "unknown", "payload": {"message": "No he entendido cómo ayudarte con eso."}}   
 
 # --- 4. ENDPOINTS DE LA API ---
 @app.get("/")
