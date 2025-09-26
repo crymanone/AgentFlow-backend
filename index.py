@@ -216,7 +216,13 @@ def create_event_in_calendar(user_id: str, event_details: dict):
     try:
         service = get_google_service(user_id, 'calendar', 'v3', scopes=['https://www.googleapis.com/auth/calendar.events'])
         
-        start_time_str = parse_datetime_with_gemini(event_details.get("event_date_time", ""))
+        date_text = event_details.get("event_date_time", "")
+        start_time_str = parse_datetime_with_gemini(date_text)
+
+        # [LA CORRECCIÓN] Verificamos si la IA nos ha devuelto una fecha válida
+        if not start_time_str or 'T' not in start_time_str:
+            raise ValueError(f"No pude convertir '{date_text}' a una fecha y hora concretas. Por favor, sé más específico (ej: 'mañana a las 10:30' o '22 de octubre a las 10am').")
+
         start_time_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
         end_time_dt = start_time_dt + timedelta(hours=1)
 
@@ -233,8 +239,11 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 
         created_event = service.events().insert(calendarId='primary', body=event).execute()
         return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
+    except HttpError as error:
+        raise Exception(f"Error de API de Calendario: {error.reason}")
     except Exception as e:
-        raise Exception(f"Error creando evento: {e}")
+        # Re-lanzamos la excepción para que el endpoint principal la capture y la muestre al usuario
+        raise e
 
 
 # --- 4. ENDPOINTS DE LA API ---
