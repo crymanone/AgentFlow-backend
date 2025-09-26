@@ -264,12 +264,20 @@ REDIRECT_URI_GOOGLE = "https://agent-flow-backend-drab.vercel.app/google/callbac
 async def auth_google(request: Request):
     id_token = request.query_params.get("token")
     scopes = [
-        "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/calendar.events",
-        "https://www.googleapis.com/auth/contacts.readonly", "https://www.googleapis.com/auth/gmail.readonly"
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/gmail.readonly"
     ]
     scope_string = " ".join(scopes)
-    url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={REDIRECT_URI_GOOGLE}"
-           f"&response_type=code&scope={scope_string}&access_type=offline&prompt=consent&state={id_token}")
+    
+    url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={os.environ.get('GOOGLE_CLIENT_ID')}"
+           f"&redirect_uri={os.environ.get('REDIRECT_URI_GOOGLE')}"
+           f"&response_type=code&scope={scope_string}"
+           f"&access_type=offline"
+           f"&prompt=consent"  # <--- [LA CORRECCIÓN] ESTA LÍNEA ES LA CLAVE
+           f"&state={id_token}")
+           
     return RedirectResponse(url=url)
 
 @app.get("/google/callback")
