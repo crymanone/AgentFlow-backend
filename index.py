@@ -91,7 +91,7 @@ def interpret_intent_with_openai(text: str) -> dict:
 
 def generate_draft_with_gemini(params: dict) -> dict:
     # [NUEVA VERSIÓN BLINDADA]
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     content_summary = params.get("content_summary", "No especificado.")
     prompt = f'OBJETIVO: "{content_summary}". Escribe un correo profesional y devuelve un JSON con "subject" y "body".'
     response = model.generate_content(
@@ -179,7 +179,7 @@ def find_contact_in_google(user_id: str, contact_name: str):
 
 def parse_datetime_with_gemini(text_date: str) -> str:
     # [NUEVA VERSIÓN BLINDADA]
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     # Activamos el modo de respuesta JSON
     response = model.generate_content(
         f"Analiza este texto de fecha y hora: '{text_date}'. Devuelve un objeto JSON con la clave 'iso_8601'.",
