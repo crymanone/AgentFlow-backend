@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+from email.mime.text import MIMEText
 
 # --- SDKs ---
 import google.generativeai as genai
@@ -150,16 +151,25 @@ def summarize_emails_with_gemini(emails: list) -> str:
     
 def create_draft_in_gmail(user_id: str, draft_data: dict):
     try:
-        service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.compose"])
-        message_body = (f"To: {draft_data['to']}\n"
-                        f"Subject: {draft_data['subject']}\n\n"
-                        f"{draft_data['body']}")
-        raw_message = base64.urlsafe_b64encode(message_body.encode("utf-8")).decode("utf-8")
-        draft = {'message': {'raw': raw_message}}
-        created_draft = service.users().drafts().create(userId='me', body=draft).execute()
+        service = get_gmail_service(user_id, write_permission=True)
+        
+        # [LA CORRECCIÓN] Usamos el constructor de MIME para un formato robusto
+        message = MIMEText(draft_data['body'])
+        message['to'] = draft_data['to']
+        message['subject'] = draft_data['subject']
+        
+        # Codificamos el mensaje completo en base64 para la API
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+        
+        draft_body = {'message': {'raw': raw_message}}
+        created_draft = service.users().drafts().create(userId='me', body=draft_body).execute()
         return created_draft
     except HttpError as error:
-        raise Exception(f"Error de API de Gmail al crear borrador: {error.reason}")
+        # Devolvemos el mensaje de error de la API de Google para más claridad
+        error_details = json.loads(error.content.decode('utf-8'))
+        raise Exception(f"Error de API de Gmail: {error_details['error']['message']}")
+    except Exception as e:
+        raise Exception(f"Error creando borrador: {e}")
 
 def find_contact_in_google(user_id: str, contact_name: str):
     try:
@@ -178,15 +188,29 @@ def find_contact_in_google(user_id: str, contact_name: str):
     except HttpError as error: raise Exception(f"Error de API de Contactos: {error.reason}")
 
 def parse_datetime_with_gemini(text_date: str) -> str:
-    # [NUEVA VERSIÓN BLINDADA]
+    # Usamos el modelo 'flash' para esta tarea de extracción rápida
     model = genai.GenerativeModel('gemini-2.5-flash')
-    # Activamos el modo de respuesta JSON
-    response = model.generate_content(
-        f"Analiza este texto de fecha y hora: '{text_date}'. Devuelve un objeto JSON con la clave 'iso_8601'.",
-        generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
-    )
-    # Gemini ahora devuelve un JSON directamente, no hay que parsearlo dos veces.
-    return json.loads(response.text).get("iso_8601", "")
+    prompt = f"""
+    Tu única tarea es analizar un texto que describe una fecha y hora y convertirlo a un formato ISO 8601 UTC estricto (YYYY-MM-DDTHH:MM:SSZ).
+    Asume el año actual si no se especifica.
+    Interpreta frases como "mañana", "lunes que viene", "a las cinco de la tarde".
+    Si el texto es ambiguo o no es una fecha, devuelve un string vacío.
+    RESPONDE ÚNICA Y EXCLUSIVAMENTE CON EL STRING ISO 8601 O UN STRING VACÍO.
+
+    Texto a analizar: '{text_date}'
+    """
+    try:
+        response = model.generate_content(prompt)
+        # Limpiamos la respuesta para asegurarnos de que no contenga carácteres extraños
+        iso_date = response.text.strip().replace("`", "")
+        # Verificación simple para asegurar que parece una fecha ISO
+        if 'T' in iso_date and ':' in iso_date:
+            return iso_date
+        else:
+            return "" # Devolvemos vacío si la IA no ha devuelto un formato reconocible
+    except Exception as e:
+        print(f"Error parseando fecha con Gemini: {e}")
+        return ""
 
 def create_event_in_calendar(user_id: str, event_details: dict):
     try:
