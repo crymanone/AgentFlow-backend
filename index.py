@@ -94,17 +94,15 @@ def interpret_intent_with_openai(text: str) -> dict:
     RESPONDE SÓLO CON EL OBJETO JSON.
     """
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
+        response = openai_client.chat.completions.create(...)
+        
+        # [LA CORRECCIÓN] Verificamos si hay una respuesta válida
+        response_message = response.choices[0].message
+        if not response_message.content:
+            return {"action": "unknown", "parameters": {"message": "La IA no ha determinado una acción."}}
+
+        return json.loads(response_message.content)
     except Exception as e:
-        print(f"Error en OpenAI interpretando: {e}")
         return {"action": "error", "parameters": {"message": f"IA (OpenAI) no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
@@ -153,7 +151,7 @@ def summarize_emails_with_gemini(emails: list) -> str:
     
 def create_draft_in_gmail(user_id: str, draft_data: dict):
     try:
-        service = get_gmail_service(user_id, write_permission=True)
+        service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.compose"])
         
         # [LA CORRECCIÓN] Usamos el constructor de MIME para un formato robusto
         message = MIMEText(draft_data['body'])
