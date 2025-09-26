@@ -195,38 +195,36 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 
 def execute_tool_call(user_input: str, user_id: str):
     tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search_emails",
-                "description": "Busca en los correos del usuario.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "search_query": {"type": "string", "description": "El término de búsqueda para Gmail."},
-                    },
-                    "required": ["search_query"],
-                },
-            },
-        },
+        # ... (las otras herramientas no cambian)
         {
             "type": "function",
             "function": {
                 "name": "create_event",
-                "description": "Crea un nuevo evento en el calendario.",
+                "description": "Crea un nuevo evento o cita en el calendario del usuario. Utiliza esta herramienta para cualquier petición que implique agendar algo.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "summary": {"type": "string", "description": "El título del evento."},
-                        "attendee_email": {"type": "string", "description": "El email del invitado."},
-                        "start_time": {"type": "string", "description": "Fecha y hora de inicio en formato ISO 8601."},
-                        "end_time": {"type": "string", "description": "Fecha y hora de fin en formato ISO 8601."},
+                        "event_summary": {
+                            "type": "string", 
+                            "description": "Un título corto y descriptivo para el evento. Ej: 'Cita con el oculista', 'Reunión de proyecto'"
+                        },
+                        "event_date_time": {
+                            "type": "string",
+                            "description": "La fecha y hora del evento, extraída directamente del texto. Ej: 'mañana a las 10:30', 'el día 22 de octubre'"
+                        },
+                        "event_location": {
+                            "type": "string",
+                            "description": "La ubicación del evento, si se menciona. Ej: 'en el ventorrillo', 'oficina principal'"
+                        },
+                         "attendee_email": {
+                            "type": "string",
+                            "description": "El email de la persona a invitar, si se menciona explícitamente."
+                        }
                     },
-                    "required": ["summary", "attendee_email", "start_time", "end_time"],
+                    "required": ["event_summary", "event_date_time"],
                 },
             },
         },
-        # (Aquí añadiríamos las definiciones para las otras herramientas)
     ]
     
     response = openai_client.chat.completions.create(
