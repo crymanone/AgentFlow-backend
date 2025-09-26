@@ -24,6 +24,23 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 db = None
 openai_client = None
 
+def get_google_service(user_id: str, service_name: str, version: str, scopes: list):
+    if not db: raise Exception("Base de datos no disponible.")
+    doc_ref = db.collection("users").document(user_id).collection("connected_accounts").document("google")
+    doc = doc_ref.get()
+    if not doc.exists: raise Exception("Cuenta de Google no conectada.")
+    
+    tokens = doc.to_dict()
+    creds = Credentials(token=tokens.get("access_token"), refresh_token=tokens.get("refresh_token"),
+                        token_uri="https://oauth2.googleapis.com/token", client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+                        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"), scopes=scopes)
+
+    if not creds.valid and creds.expired and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest())
+        doc_ref.update({"access_token": creds.token})
+    
+    return build(service_name, version, credentials=creds)
+
 def initialize_firebase_admin_once():
     global db
     if not firebase_admin._apps:
@@ -101,22 +118,7 @@ def generate_draft_with_gemini(params: dict) -> dict:
     )
     return json.loads(response.text)
     
-def get_google_service(user_id: str, service_name: str, version: str, scopes: list):
-    if not db: raise Exception("Base de datos no disponible.")
-    doc_ref = db.collection("users").document(user_id).collection("connected_accounts").document("google")
-    doc = doc_ref.get()
-    if not doc.exists: raise Exception("Cuenta de Google no conectada.")
-    
-    tokens = doc.to_dict()
-    creds = Credentials(token=tokens.get("access_token"), refresh_token=tokens.get("refresh_token"),
-                        token_uri="https://oauth2.googleapis.com/token", client_id=os.environ.get("GOOGLE_CLIENT_ID"),
-                        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"), scopes=scopes)
 
-    if not creds.valid and creds.expired and creds.refresh_token:
-        creds.refresh(GoogleAuthRequest())
-        doc_ref.update({"access_token": creds.token})
-    
-    return build(service_name, version, credentials=creds)
 
 def translate_params_to_gmail_query(params: dict) -> str:
     query_parts = []
@@ -188,29 +190,32 @@ def find_contact_in_google(user_id: str, contact_name: str):
     except HttpError as error: raise Exception(f"Error de API de Contactos: {error.reason}")
 
 def parse_datetime_with_gemini(text_date: str) -> str:
-    # Usamos el modelo 'flash' para esta tarea de extracción rápida
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    # [LA CORRECCIÓN] Prompt mucho más robusto con ejemplos claros.
     prompt = f"""
     Tu única tarea es analizar un texto que describe una fecha y hora y convertirlo a un formato ISO 8601 UTC estricto (YYYY-MM-DDTHH:MM:SSZ).
-    Asume el año actual si no se especifica.
-    Interpreta frases como "mañana", "lunes que viene", "a las cinco de la tarde".
-    Si el texto es ambiguo o no es una fecha, devuelve un string vacío.
+    Asume que la fecha de hoy es {datetime.now().strftime('%Y-%m-%d')}.
+    Interpreta frases relativas como "mañana a las 10:30", "lunes que viene a las 3pm", "el 29".
+
+    EJEMPLOS DE CONVERSIÓN:
+    - "mañana a las 10:30 de la mañana" -> (calcula la fecha de mañana)T10:30:00Z
+    - "el día 22 de octubre a las 10am" -> (año actual)-10-22T10:00:00Z
+    - "lunes 29 por la mañana en la sala 1" -> (calcula la fecha del próximo lunes 29)T09:00:00Z (asume una hora por defecto si no se especifica)
+
+    Si el texto es ambiguo o no es una fecha válida, devuelve un string vacío.
     RESPONDE ÚNICA Y EXCLUSIVAMENTE CON EL STRING ISO 8601 O UN STRING VACÍO.
 
     Texto a analizar: '{text_date}'
     """
     try:
         response = model.generate_content(prompt)
-        # Limpiamos la respuesta para asegurarnos de que no contenga carácteres extraños
         iso_date = response.text.strip().replace("`", "")
-        # Verificación simple para asegurar que parece una fecha ISO
-        if 'T' in iso_date and ':' in iso_date:
-            return iso_date
-        else:
-            return "" # Devolvemos vacío si la IA no ha devuelto un formato reconocible
+        # Verificación final para asegurar que parece una fecha ISO válida
+        datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
+        return iso_date
     except Exception as e:
-        print(f"Error parseando fecha con Gemini: {e}")
-        return ""
+        print(f"Error parseando fecha '{text_date}' con Gemini: {e}")
+        return "" # Devolvemos vacío si la IA devuelve algo incorrecto o hay un error
 
 def create_event_in_calendar(user_id: str, event_details: dict):
     try:
