@@ -4,6 +4,7 @@ from functools import wraps
 import base64
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
