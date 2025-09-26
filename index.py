@@ -193,6 +193,28 @@ def create_event_in_calendar(user_id: str, event_details: dict):
         return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
     except HttpError as error: raise Exception(f"Error de API de Calendario: {error.reason}")
 
+def execute_tool_call(user_input: str, user_id: str):
+    tools = [ # Describimos nuestras herramientas a la IA
+        {"type": "function", "function": {"name": "search_emails", ...}},
+        {"type": "function", "function": {"name": "find_contact", ...}},
+        {"type": "function", "function": {"name": "create_event", ...}}
+    ]
+    
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": user_input}],
+        tools=tools,
+        tool_choice="auto"
+    )
+    
+    # ... (Lógica para manejar la respuesta de la IA)
+    # Si la IA pide llamar a una herramienta (ej: 'create_event')...
+    if tool_call.name == "create_event":
+        # ... Si falta el email, llamamos a find_contact primero ...
+        if not attendee_email:
+            # ... Si find_contact devuelve varios, respondemos con 'ask'
+            return {"action": "ask", "payload": {"question": "¿A cuál te refieres?", "options": [...]}}   
+
 # --- 4. ENDPOINTS DE LA API ---
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
@@ -201,28 +223,12 @@ def root(): return {"status": "AgentFlow Backend Activo"}
 @verify_token
 async def voice_command(request: Request, data: dict):
     user_id = request.state.user["uid"]; text = data.get("text", "")
-    intent = interpret_intent_with_openai(text); action = intent.get("action"); params = intent.get("parameters", {})
     try:
-        if action == "summarize_inbox" or action == "search_emails":
-            query = translate_params_to_gmail_query(params); emails = get_real_emails_for_user(user_id, search_query=query)
-            if action == "summarize_inbox":
-                if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
-                summary = summarize_emails_with_gemini(emails); return {"action": "summarize_inbox", "payload": {"summary": summary}}
-            else: return {"action": "search_emails_result", "payload": {"emails": emails}}
-        elif action == "create_draft":
-            email_content = generate_draft_with_gemini(params)
-            full_draft_data = {"to": params.get("recipient"), "subject": email_content.get("subject"), "body": email_content.get("body")}
-            created_draft = create_draft_in_gmail(user_id, full_draft_data); full_draft_data['id'] = created_draft.get('id')
-            return {"action": "draft_created", "payload": {"draft": full_draft_data}}
-        elif action == "find_contact":
-            contact_result = find_contact_in_google(user_id, params.get("contact_name"))
-            if contact_result["type"] == "disambiguation": return {"action": "ask", "payload": contact_result["data"]}
-            else: return {"action": "contact_found", "payload": contact_result["data"]}
-        elif action == "create_event":
-            result = create_event_in_calendar(user_id, params); return {"action": "event_created", "payload": result}
-        elif action == "error": return {"action": "error", "payload": params}
-        else: return {"action": "unknown", "payload": {"message": f"Acción '{action}' no implementada."}}
-    except Exception as e: return {"action": "error", "payload": {"message": str(e)}}
+        # Reemplazamos la llamada antigua por la nueva
+        result = execute_tool_call(text, user_id)
+        return result
+    except Exception as e:
+        return {"action": "error", "payload": {"message": str(e)}}
 
 @app.get("/api/accounts/status")
 @verify_token
