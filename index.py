@@ -181,17 +181,19 @@ def find_contact_in_google(user_id: str, contact_name: str):
 
 def create_event_in_calendar(user_id: str, event_details: dict):
     try:
-        service = get_google_service(user_id, 'calendar', 'v3', scopes=['https://www.googleapis.com/auth/calendar.events'])
-        start_time = (datetime.now(timezone.utc) + timedelta(days=1)).replace(hour=10, minute=0, second=0).isoformat()
-        end_time = (datetime.now(timezone.utc) + timedelta(days=1)).replace(hour=11, minute=0, second=0).isoformat()
+        service = get_google_service(user_id, 'calendar', 'v3', scopes=['https://www.googleapis.com/auth/calendar'])
 
-        event = { 'summary': event_details.get('event_summary', 'Reunión'), 'location': event_details.get('event_location', ''),
-            'description': 'Evento creado por AgentFlow.', 'start': {'dateTime': start_time, 'timeZone': 'UTC'},
+        start_time_str = parse_datetime_with_gemini(event_details.get("event_date_time"))
+        start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+        end_time = (start_time + timedelta(hours=1)).isoformat()
+
+        event = {
+            'summary': event_details.get('event_summary', 'Reunión'),
+            # ...
+            'start': {'dateTime': start_time.isoformat(), 'timeZone': 'UTC'},
             'end': {'dateTime': end_time, 'timeZone': 'UTC'},
-            'attendees': [{'email': event_details.get("attendee_email")}], }
-        created_event = service.events().insert(calendarId='primary', body=event).execute()
-        return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
-    except HttpError as error: raise Exception(f"Error de API de Calendario: {error.reason}")
+            # ...
+        }
 
 def execute_tool_call(user_input: str, user_id: str):
     tools = [
@@ -250,7 +252,16 @@ def execute_tool_call(user_input: str, user_id: str):
             return {"action": "event_created", "payload": {"message": "¡Evento creado con éxito! (Simulación)"}}
 
     # Si no hay tool_calls, devolvemos 'unknown'
-    return {"action": "unknown", "payload": {"message": "No he entendido cómo ayudarte con eso."}}   
+    return {"action": "unknown", "payload": {"message": "No he entendido cómo ayudarte con eso."}} 
+
+def parse_datetime_with_gemini(text_date: str) -> str:
+    # Le pedimos a la IA que haga el trabajo sucio de las fechas
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    prompt = f"Convierte el siguiente texto a un formato ISO 8601 (YYYY-MM-DDTHH:MM:SS). Asume la zona horaria UTC. Texto: '{text_date}'"
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+
 
 # --- 4. ENDPOINTS DE LA API ---
 @app.get("/")
