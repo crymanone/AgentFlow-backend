@@ -73,15 +73,24 @@ def interpret_intent_with_openai(text: str) -> dict:
     Normaliza fechas: "hoy" -> "today", "mañana" -> "tomorrow", etc.
     RESPONDE SÓLO CON EL OBJETO JSON.
     """
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        return {"action": "error", "parameters": {"message": f"IA (OpenAI) no pudo interpretar: {e}"}}
+     for i in range(3): # Intentar hasta 3 veces
+        try:
+            response = openai_client.chat.completions.create(...) # Misma llamada de antes
+            
+            # Limpieza agresiva
+            clean_content = response.choices[0].message.content.strip().replace("```json", "").replace("```", "")
+            
+            if not clean_content:
+                raise ValueError("La IA devolvió una respuesta vacía.")
+
+            return json.loads(clean_content)
+
+        except Exception as e:
+            print(f"Intento {i+1} fallido para interpretar: {e}")
+            if i < 2: # Si no es el último intento
+                time.sleep(2 ** i) # Espera 1, 2 segundos
+            else: # Si es el último intento, devolvemos el error
+                return {"action": "error", "parameters": {"message": f"IA (OpenAI) no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
     model = genai.GenerativeModel('gemini-2.5-pro')
