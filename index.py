@@ -194,10 +194,39 @@ def create_event_in_calendar(user_id: str, event_details: dict):
     except HttpError as error: raise Exception(f"Error de API de Calendario: {error.reason}")
 
 def execute_tool_call(user_input: str, user_id: str):
-    tools = [ # Describimos nuestras herramientas a la IA
-        {"type": "function", "function": {"name": "search_emails", ...}},
-        {"type": "function", "function": {"name": "find_contact", ...}},
-        {"type": "function", "function": {"name": "create_event", ...}}
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_emails",
+                "description": "Busca en los correos del usuario.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "search_query": {"type": "string", "description": "El término de búsqueda para Gmail."},
+                    },
+                    "required": ["search_query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_event",
+                "description": "Crea un nuevo evento en el calendario.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string", "description": "El título del evento."},
+                        "attendee_email": {"type": "string", "description": "El email del invitado."},
+                        "start_time": {"type": "string", "description": "Fecha y hora de inicio en formato ISO 8601."},
+                        "end_time": {"type": "string", "description": "Fecha y hora de fin en formato ISO 8601."},
+                    },
+                    "required": ["summary", "attendee_email", "start_time", "end_time"],
+                },
+            },
+        },
+        # (Aquí añadiríamos las definiciones para las otras herramientas)
     ]
     
     response = openai_client.chat.completions.create(
