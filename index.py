@@ -94,9 +94,19 @@ def interpret_intent_with_openai(text: str) -> dict:
     RESPONDE SÓLO CON EL OBJETO JSON.
     """
     try:
-        response = openai_client.chat.completions.create(...)
+        # [LA CORRECCIÓN]
+        # Todos los parámetros van DENTRO de un único objeto
+        completion_params = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text}
+            ],
+            "response_format": {"type": "json_object"}
+        }
         
-        # [LA CORRECCIÓN] Verificamos si hay una respuesta válida
+        response = openai_client.chat.completions.create(**completion_params) # Se usan ** para desempaquetar el diccionario
+
         response_message = response.choices[0].message
         if not response_message.content:
             return {"action": "unknown", "parameters": {"message": "La IA no ha determinado una acción."}}
