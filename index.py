@@ -52,17 +52,23 @@ def verify_token(f):
 
 # --- 3. LÓGICA DE IA Y DATOS ---
 def interpret_intent_with_gemini(text: str) -> dict:
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    # [CAMBIO] Usamos el modelo 'flash' para esta tarea simple.
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    
+    # [CAMBIO] Prompt ultra-simplificado.
     prompt = f"""
-    Analiza: "{text}". Extrae 'action' y 'parameters' en JSON.
-    ACCIONES: "summarize_inbox", "search_emails", "create_draft", "find_contact", "check_availability", "unknown".
-    PARÁMETROS: "client_name", "time_period", "recipient", "content_summary", "contact_name", "event_summary", "event_date_time".
-    Responde SÓLO con el JSON.
+    Clasifica el siguiente texto en una acción y extrae parámetros.
+    Acciones posibles: summarize_inbox, search_emails, create_draft, find_contact, check_availability.
+    Parámetros a extraer: client_name, time_period, recipient, content_summary, contact_name.
+    Si no encaja, la acción es "unknown".
+    RESPONDE SÓLO CON JSON.
+    TEXTO: "{text}"
     """
     try:
         response = model.generate_content(prompt)
-        return json.loads(response.text)
-    except Exception as e: return {"action": "error", "parameters": {"message": f"IA no pudo interpretar: {e}"}}
+        return json.loads(response.text.strip().replace("```json", "").replace("```", ""))
+    except Exception as e:
+        return {"action": "error", "parameters": {"message": f"IA (flash) no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
     content_summary = params.get("content_summary", "No se especificó contenido.")
@@ -114,8 +120,9 @@ def get_real_emails_for_user(user_id: str, search_query: str = "") -> list:
     except HttpError as error: raise Exception(f"Error de API de Gmail: {error.reason}")
 
 def summarize_emails_with_gemini(emails: list) -> str:
-    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
+    # Para tareas complejas, mantenemos el modelo 'pro'.
     model = genai.GenerativeModel('gemini-2.5-pro')
+    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva: {json.dumps(emails)}'
     response = model.generate_content(prompt)
     return response.text.strip()
     
