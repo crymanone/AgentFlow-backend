@@ -306,3 +306,37 @@ async def connect_google(request: Request, data: dict):
     except Exception as e:
         print(f"ERROR finalizando conexión: {e}")
         raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
+
+@app.get("/google/callback")
+async def google_callback(request: Request):
+    initialize_firebase_admin_once()
+    if not db: raise HTTPException(status_code=500, detail="Base de datos no disponible.")
+    
+    id_token = request.query_params.get("state")
+    code = request.query_params.get("code")
+    
+    if not id_token or not code:
+        raise HTTPException(status_code=400, detail="Falta información en el callback.")
+
+    try:
+        user_id = auth.verify_id_token(id_token)["uid"]
+        
+        token_url = "https://oauth2.googleapis.com/token"
+        data = {
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
+            "code": code,
+            "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback", # Debe ser exacta
+            "grant_type": "authorization_code"
+        }
+        
+        r = requests.post(token_url, data=data)
+        r.raise_for_status()
+        tokens = r.json()
+        
+        user_ref = db.collection("users").document(user_id)
+        user_ref.collection("connected_accounts").document("google").set(tokens)
+        
+        return JSONResponse(content={"status": "Cuenta de Google conectada. Puedes cerrar esta ventana."})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")        
