@@ -1,4 +1,3 @@
-# requirements.txt
 fastapi
 uvicorn
 google-generativeai
@@ -6,4 +5,4 @@ firebase-admin
 requests
 google-api-python-client
 google-auth-oauthlib
-google-auth-httplib2
+openai
