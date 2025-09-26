@@ -89,12 +89,15 @@ def interpret_intent_with_openai(text: str) -> dict:
         return {"action": "error", "parameters": {"message": f"IA (OpenAI) no pudo interpretar: {e}"}}
 
 def generate_draft_with_gemini(params: dict) -> dict:
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    # [NUEVA VERSIÓN BLINDADA]
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
     content_summary = params.get("content_summary", "No especificado.")
-    prompt = f'OBJETIVO: "{content_summary}". Escribe un correo profesional (subject, body) en JSON.'
-    response = model.generate_content(prompt)
-    clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-    return json.loads(clean_text)
+    prompt = f'OBJETIVO: "{content_summary}". Escribe un correo profesional y devuelve un JSON con "subject" y "body".'
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+    )
+    return json.loads(response.text)
     
 def get_google_service(user_id: str, service_name: str, version: str, scopes: list):
     if not db: raise Exception("Base de datos no disponible.")
@@ -174,10 +177,15 @@ def find_contact_in_google(user_id: str, contact_name: str):
     except HttpError as error: raise Exception(f"Error de API de Contactos: {error.reason}")
 
 def parse_datetime_with_gemini(text_date: str) -> str:
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    prompt = f"Convierte el siguiente texto a un formato ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ). Asume el año actual si no se especifica. Texto: '{text_date}'"
-    response = model.generate_content(prompt)
-    return response.text.strip().replace("`", "")
+    # [NUEVA VERSIÓN BLINDADA]
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    # Activamos el modo de respuesta JSON
+    response = model.generate_content(
+        f"Analiza este texto de fecha y hora: '{text_date}'. Devuelve un objeto JSON con la clave 'iso_8601'.",
+        generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+    )
+    # Gemini ahora devuelve un JSON directamente, no hay que parsearlo dos veces.
+    return json.loads(response.text).get("iso_8601", "")
 
 def create_event_in_calendar(user_id: str, event_details: dict):
     try:
