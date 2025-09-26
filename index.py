@@ -266,32 +266,43 @@ class AuthCode(BaseModel):
 
 @app.post("/api/connect/google")
 @verify_token
-async def connect_google(request: Request, auth_code: AuthCode):
+async def connect_google(request: Request, data: dict):
     user_id = request.state.user["uid"]
-    
-    # [LA NUEVA LÓGICA] El backend ahora finaliza el flujo, no lo inicia.
+    code = data.get("code")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Falta el 'code' de autorización.")
+
     try:
         token_url = "https://oauth2.googleapis.com/token"
-        # La URI de redirección para el flujo del cliente debe ser manejada
-        # por la configuración de Expo y Google Cloud, usualmente con esquemas nativos.
-        # Para el intercambio de código, a menudo no se necesita si se usa 'postmessage'.
-        redirect_uri_for_client = "http://localhost:8081" # Esto debe coincidir en Google Cloud
+        
+        # IMPORTANTE: Esta redirect_uri es para la API, y puede ser diferente
+        # a la que usa Expo en el cliente. Usaremos una placeholder.
+        # En Google Cloud deben estar AMBAS autorizadas.
+        redirect_uri_backend = "https://agent-flow-backend-drab.vercel.app/google/callback"
 
-        data = {
+        payload = {
             "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-            "code": auth_code.code,
-            "redirect_uri": redirect_uri_for_client, 
+            "code": code,
+            "redirect_uri": redirect_uri_backend,
             "grant_type": "authorization_code"
         }
         
-        r = requests.post(token_url, data=data)
+        r = requests.post(token_url, data=payload)
         r.raise_for_status()
         tokens = r.json()
         
-        # Guardar en Firestore (sin cambios)
-        # ...
-        
+        # Guardar en Firestore
+        if db:
+            user_ref = db.collection("users").document(user_id)
+            user_ref.collection("connected_accounts").document("google").set(tokens)
+
         return {"status": "Cuenta de Google conectada con éxito."}
+
+    except requests.exceptions.HTTPError as e:
+        print(f"ERROR HTTP al intercambiar código: {e.response.text}")
+        raise HTTPException(status_code=500, detail=f"No se pudo verificar con Google: {e.response.text}")
     except Exception as e:
+        print(f"ERROR finalizando conexión: {e}")
         raise HTTPException(status_code=500, detail=f"No se pudo vincular la cuenta: {e}")
