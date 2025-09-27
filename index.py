@@ -25,6 +25,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 
 # ==============================================================================
 # 1. INICIALIZACIÓN DE SERVICIOS GLOBALES
@@ -393,3 +395,116 @@ async def get_accounts_status(request: Request):
 @app.get("/google/callback")
 async def google_callback(request: Request):
     return JSONResponse(content={"status": "completed", "message": "Proceso de autorización completado. Puedes cerrar esta ventana."})
+
+@app.get("/google/auth-start")
+async def google_auth_start(request: Request):
+    """Endpoint que inicia el flujo OAuth de Google"""
+    try:
+        firebase_token = request.query_params.get("firebaseToken")
+        
+        if not firebase_token:
+            return JSONResponse(
+                status_code=400, 
+                content={"error": "Token de Firebase requerido"}
+            )
+        
+        # Verificar el token de Firebase
+        decoded_token = auth.verify_id_token(firebase_token)
+        user_id = decoded_token["uid"]
+        
+        # Construir la URL de autorización de Google
+        scopes = [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose", 
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/contacts.readonly"
+        ]
+        
+        google_auth_url = (
+            "https://accounts.google.com/o/oauth2/v2/auth?"
+            f"client_id={os.environ.get('GOOGLE_CLIENT_ID')}&"
+            f"redirect_uri=https://agent-flow-backend-drab.vercel.app/google/callback&"
+            f"response_type=code&"
+            f"scope={'%20'.join(scopes)}&"
+            f"access_type=offline&"
+            f"prompt=consent&"
+            f"state={user_id}"
+        )
+        
+        return RedirectResponse(google_auth_url)
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, 
+            content={"error": f"Error iniciando autenticación: {str(e)}"}
+        )
+
+@app.get("/google/callback")
+async def google_callback(request: Request):
+    """Callback de Google OAuth"""
+    try:
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")  # user_id
+        
+        if not code:
+            return JSONResponse(
+                status_code=400, 
+                content={"error": "Código de autorización no recibido"}
+            )
+        
+        # Intercambiar código por tokens
+        token_url = "https://oauth2.googleapis.com/token"
+        payload = {
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback"
+        }
+        
+        response = requests.post(token_url, data=payload)
+        response.raise_for_status()
+        tokens = response.json()
+        
+        # Guardar tokens en Firestore
+        if state:  # user_id
+            tokens_to_save = {
+                'token': tokens.get('access_token'),
+                'refresh_token': tokens.get('refresh_token'),
+                'client_id': os.environ.get("GOOGLE_CLIENT_ID"),
+                'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"),
+                'scopes': tokens.get('scope', '').split(),
+                'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat()
+            }
+            
+            db.collection("users").document(state).collection("connected_accounts").document("google").set(tokens_to_save)
+        
+        # Redirigir a una página de éxito
+        success_html = """
+        <html>
+            <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
+                <h1>✅ Autenticación Exitosa</h1>
+                <p>Tu cuenta de Google ha sido conectada correctamente.</p>
+                <p>Puedes cerrar esta ventana y volver a la app.</p>
+                <button onclick="window.close()" style="background: #1E90FF; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                    Cerrar Ventana
+                </button>
+            </body>
+        </html>
+        """
+        return HTMLResponse(content=success_html)
+        
+    except Exception as e:
+        error_html = f"""
+        <html>
+            <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
+                <h1>❌ Error de Autenticación</h1>
+                <p>Ha ocurrido un error: {str(e)}</p>
+                <p>Por favor, intenta nuevamente.</p>
+                <button onclick="window.close()" style="background: #FF6B6B; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                    Cerrar Ventana
+                </button>
+            </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html)    
