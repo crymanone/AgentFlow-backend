@@ -284,9 +284,15 @@ async def voice_command(request: Request, data: dict):
                 summary = summarize_emails_with_gemini(emails); return {"action": "summarize_inbox", "payload": {"summary": summary}}
             else: return {"action": "search_emails_result", "payload": {"emails": emails}}
         elif action == "create_draft":
-            email_content = generate_draft_with_gemini(params)
-            full_draft_data = {"to": params.get("recipient"), "subject": email_content.get("subject"), "body": email_content.get("body")}
-            created_draft = create_draft_in_gmail(user_id, full_draft_data); full_draft_data['id'] = created_draft.get('id')
+            # [LA CORRECCIÓN] Ahora pasamos el comando original a la función
+            email_content = generate_draft_with_gemini(params, text) 
+            full_draft_data = {
+                "to": params.get("recipient"),
+                "subject": email_content.get("subject"),
+                "body": email_content.get("body")
+            }
+            created_draft = create_draft_in_gmail(user_id, full_draft_data)
+            full_draft_data['id'] = created_draft.get('id')
             return {"action": "draft_created", "payload": {"draft": full_draft_data}}
         elif action == "find_contact":
             contact_result = find_contact_in_google(user_id, params.get("contact_name"))
