@@ -281,38 +281,45 @@ async def send_draft(request: Request, draft_id: str):
 # 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2)
 # ==============================================================================
 
-class AuthPayload(BaseModel):
+class AuthCode(BaseModel):
     code: str
-    redirectUri: str
+    redirect_uri: str   # 👈 Nuevo: el frontend envía la redirectUri que usó Expo
 
 @app.post("/api/connect/google")
 @verify_token
-async def connect_google_account(request: Request, data: AuthPayload):
+async def connect_google_account(request: Request, data: AuthCode):
     user_id = request.state.user["uid"]
     code = data.code
-    frontend_redirect_uri = data.redirectUri # Recibimos la URI del frontend
+    redirect_uri = data.redirect_uri   # 👈 usamos la misma que recibió el frontend
     
+    if not db:
+        raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
     try:
+        token_url = "https://oauth2.googleapis.com/token"
         payload = {
             "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
             "code": code,
-            "redirect_uri": frontend_redirect_uri, # <-- La usamos aquí para que coincida
+            "redirect_uri": redirect_uri,   # 👈 importante: debe coincidir
             "grant_type": "authorization_code"
         }
-        r = requests.post("https://oauth2.googleapis.com/token", data=payload)
+        
+        r = requests.post(token_url, data=payload)
         r.raise_for_status()
         tokens = r.json()
         
+        # Guardamos credenciales en Firestore
         tokens['client_id'] = os.environ.get("GOOGLE_CLIENT_ID")
         tokens['client_secret'] = os.environ.get("GOOGLE_CLIENT_SECRET")
-        
+
         db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens)
-        return {"status": "success"}
+        return {"status": "success", "message": "Cuenta de Google conectada con éxito."}
+
     except requests.exceptions.HTTPError as e:
+        print(f"ERROR HTTP al intercambiar código: {e.response.text}")
         raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google: {e.response.text}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error inesperado: {e}")
+        raise HTTPException(status_code=500, detail=f"Error inesperado al vincular la cuenta: {e}")
 
 @app.get("/api/accounts/status")
 @verify_token
@@ -334,4 +341,7 @@ async def get_accounts_status(request: Request):
 
 @app.get("/google/callback")
 async def google_callback(request: Request):
-    return JSONResponse(content={"status": "completed", "message": "Proceso de autorización completado. Puedes cerrar esta ventana."})
+    return JSONResponse(content={
+        "status": "completed",
+        "message": "Proceso de autorización completado. Puedes cerrar esta ventana."
+    })
