@@ -1,5 +1,5 @@
 # ==============================================================================
-# AgentFlow Backend - Versión 10.0 (Producción Estable)
+# AgentFlow Backend - Versión 12.0 (Producción Final y Estable)
 # CEO: Cryman09
 # CTO: Gemini
 # ==============================================================================
@@ -61,7 +61,7 @@ except KeyError:
 
 app = FastAPI(
     title="AgentFlow Production Backend",
-    version="10.0.0"
+    version="12.0.0"
 )
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -317,17 +317,16 @@ async def send_draft(request: Request, draft_id: str):
 # 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2)
 # ==============================================================================
 
-class AuthCode(BaseModel): code: str
+class AuthPayload(BaseModel):
+    code: str
+    redirectUri: str
 
 @app.post("/api/connect/google")
 @verify_token
-async def connect_google_account(request: Request, data: AuthCode):
+async def connect_google_account(request: Request, data: AuthPayload):
     user_id = request.state.user["uid"]
     code = data.code
-
-    # La redirect_uri que el backend usa para hablar con Google debe ser la que está
-    # autorizada para el backend, no la que usó el cliente.
-    backend_redirect_uri = "https://agent-flow-backend-drab.vercel.app/google/callback"
+    frontend_redirect_uri = data.redirectUri
     
     if not db:
         raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
@@ -337,7 +336,7 @@ async def connect_google_account(request: Request, data: AuthCode):
             "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
             "code": code,
-            "redirect_uri": backend_redirect_uri, # Usamos la URI del backend
+            "redirect_uri": frontend_redirect_uri, # <-- Se usa la URI del frontend
             "grant_type": "authorization_code"
         }
         
@@ -352,6 +351,7 @@ async def connect_google_account(request: Request, data: AuthCode):
         return {"status": "success", "message": "Cuenta de Google conectada con éxito."}
 
     except requests.exceptions.HTTPError as e:
+        print(f"ERROR HTTP al intercambiar código: {e.response.text}")
         raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google: {e.response.text}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error inesperado al vincular la cuenta: {e}")
