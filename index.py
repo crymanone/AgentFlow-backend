@@ -384,17 +384,34 @@ async def connect_google_account(request: Request, data: AuthPayload):
 @app.get("/api/accounts/status")
 @verify_token
 async def get_accounts_status(request: Request):
+    """Endpoint para verificar el estado de las cuentas conectadas - VERSIÓN CORREGIDA"""
     user_id = request.state.user["uid"]
-    if not db: return {"connected": []}
+    
+    print(f"🔍 Verificando estado de cuentas para usuario: {user_id}")
+    
+    # ✅ Asegurar que Firebase esté inicializado
+    initialize_firebase_admin_once()
+    
+    if not db:
+        print("❌ Base de datos no disponible")
+        return {"connected": []}
+    
     try:
         accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
-        return {"connected": [doc.id for doc in accounts_ref.stream()]}
-    except Exception:
+        docs = accounts_ref.stream()
+        
+        connected_accounts = []
+        for doc in docs:
+            print(f"✅ Cuenta encontrada: {doc.id}")
+            connected_accounts.append(doc.id)
+        
+        print(f"📊 Cuentas conectadas para {user_id}: {connected_accounts}")
+        return {"connected": connected_accounts}
+        
+    except Exception as e:
+        print(f"❌ Error verificando estado de cuentas: {e}")
         return {"connected": []}
 
-@app.get("/google/callback")
-async def google_callback(request: Request):
-    return JSONResponse(content={"status": "completed", "message": "Proceso de autorización completado. Puedes cerrar esta ventana."})
 
 @app.get("/google/auth-start")
 async def google_auth_start(request: Request):
@@ -550,4 +567,36 @@ async def google_callback(request: Request):
             </body>
         </html>
         """
-        return HTMLResponse(content=error_html)    
+        return HTMLResponse(content=error_html)  
+
+@app.get("/api/debug/google-status")
+@verify_token
+async def debug_google_status(request: Request):
+    """Endpoint de diagnóstico para verificar el estado de Google"""
+    user_id = request.state.user["uid"]
+    
+    print(f"🔍 Diagnóstico Google para usuario: {user_id}")
+    
+    initialize_firebase_admin_once()
+    
+    if not db:
+        return {"error": "Database not available"}
+    
+    try:
+        # Verificar si existe el documento de Google
+        google_doc = db.collection("users").document(user_id).collection("connected_accounts").document("google").get()
+        
+        if google_doc.exists:
+            data = google_doc.to_dict()
+            return {
+                "connected": True,
+                "has_token": bool(data.get('token')),
+                "has_refresh_token": bool(data.get('refresh_token')),
+                "scopes": data.get('scopes', []),
+                "connected_at": data.get('connected_at')
+            }
+        else:
+            return {"connected": False, "reason": "Google document does not exist"}
+            
+    except Exception as e:
+        return {"connected": False, "error": str(e)}          
