@@ -441,17 +441,24 @@ async def google_auth_start(request: Request):
 
 @app.get("/google/callback")
 async def google_callback(request: Request):
-    """Callback de Google OAuth"""
+    """Callback de Google OAuth con mejor manejo"""
     try:
         code = request.query_params.get("code")
         state = request.query_params.get("state")  # user_id
         
         if not code:
-            return JSONResponse(
-                status_code=400, 
-                content={"error": "Código de autorización no recibido"}
-            )
-        
+            return HTMLResponse(content="""
+            <html>
+                <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
+                    <h1>❌ Error</h1>
+                    <p>No se recibió el código de autorización.</p>
+                    <button onclick="window.close()" style="background: #FF6B6B; padding: 10px 20px; border: none; border-radius: 5px; color: white; cursor: pointer;">
+                        Cerrar
+                    </button>
+                </body>
+            </html>
+            """)
+
         # Intercambiar código por tokens
         token_url = "https://oauth2.googleapis.com/token"
         payload = {
@@ -467,42 +474,65 @@ async def google_callback(request: Request):
         tokens = response.json()
         
         # Guardar tokens en Firestore
-        if state:  # user_id
+        if state:
             tokens_to_save = {
                 'token': tokens.get('access_token'),
                 'refresh_token': tokens.get('refresh_token'),
                 'client_id': os.environ.get("GOOGLE_CLIENT_ID"),
                 'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"),
                 'scopes': tokens.get('scope', '').split(),
-                'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat()
+                'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat(),
+                'connected_at': datetime.now(timezone.utc).isoformat()
             }
             
             db.collection("users").document(state).collection("connected_accounts").document("google").set(tokens_to_save)
-        
-        # Redirigir a una página de éxito
+            print(f"✅ Cuenta de Google conectada para usuario {state}")
+
+        # Página de éxito mejorada
         success_html = """
         <html>
+            <head>
+                <title>✅ Conexión Exitosa</title>
+                <script>
+                    function closeWindow() {
+                        // Intentar cerrar la ventana
+                        if (window.history.length > 1) {
+                            window.history.back();
+                        } else {
+                            window.close();
+                        }
+                    }
+                    
+                    // Intentar cerrar automáticamente después de 2 segundos
+                    setTimeout(() => {
+                        closeWindow();
+                    }, 2000);
+                </script>
+            </head>
             <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
-                <h1>✅ Autenticación Exitosa</h1>
+                <h1 style="color: #4CAF50;">✅ ¡Conexión Exitosa!</h1>
                 <p>Tu cuenta de Google ha sido conectada correctamente.</p>
-                <p>Puedes cerrar esta ventana y volver a la app.</p>
-                <button onclick="window.close()" style="background: #1E90FF; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
-                    Cerrar Ventana
-                </button>
+                <p>Esta ventana se cerrará automáticamente en 2 segundos...</p>
+                <div style="margin-top: 30px;">
+                    <button onclick="closeWindow()" style="background: #1E90FF; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 16px;">
+                        Cerrar Ventana Ahora
+                    </button>
+                </div>
             </body>
         </html>
         """
         return HTMLResponse(content=success_html)
         
     except Exception as e:
+        print(f"❌ Error en callback: {str(e)}")
         error_html = f"""
         <html>
             <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
-                <h1>❌ Error de Autenticación</h1>
+                <h1 style="color: #FF6B6B;">❌ Error de Conexión</h1>
                 <p>Ha ocurrido un error: {str(e)}</p>
                 <p>Por favor, intenta nuevamente.</p>
                 <button onclick="window.close()" style="background: #FF6B6B; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
-                    Cerrar Ventana
+                    Cerrar y Reintentar
                 </button>
             </body>
         </html>
