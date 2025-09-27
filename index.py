@@ -329,27 +329,55 @@ async def connect_google_account(request: Request, data: AuthPayload):
     frontend_redirect_uri = data.redirectUri
     
     try:
+        # VALIDACIÓN ADICIONAL: Verifica que la redirect_uri sea válida
+        allowed_redirect_uris = [
+            "http://localhost:8081",
+            "exp://localhost:8081",
+            "yourapp://google-callback"  # Agrega tu esquema de deep linking
+        ]
+        
+        if frontend_redirect_uri not in allowed_redirect_uris:
+            print(f"Redirect URI no permitida: {frontend_redirect_uri}")
+            raise HTTPException(status_code=400, detail="Redirect URI no válida")
+        
         payload = {
             "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
             "code": code,
-            "redirect_uri": frontend_redirect_uri, # <-- Se usa la URI del frontend para coincidencia
+            "redirect_uri": frontend_redirect_uri,
             "grant_type": "authorization_code"
         }
+        
+        print(f"Intercambiando código por token para usuario {user_id}")
         
         r = requests.post("https://oauth2.googleapis.com/token", data=payload)
         r.raise_for_status()
         tokens = r.json()
         
-        tokens['client_id'] = os.environ.get("GOOGLE_CLIENT_ID")
-        tokens['client_secret'] = os.environ.get("GOOGLE_CLIENT_SECRET")
+        # Guarda solo los tokens esenciales
+        tokens_to_save = {
+            'token': tokens.get('access_token'),
+            'refresh_token': tokens.get('refresh_token'),
+            'token_uri': 'https://oauth2.googleapis.com/token',
+            'client_id': os.environ.get("GOOGLE_CLIENT_ID"),
+            'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"),
+            'scopes': tokens.get('scope', '').split(' '),
+            'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat()
+        }
         
-        db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens)
-        return {"status": "success"}
+        db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens_to_save)
+        
+        print(f"Cuenta de Google conectada exitosamente para usuario {user_id}")
+        return {"status": "success", "message": "Cuenta conectada exitosamente"}
+        
     except requests.exceptions.HTTPError as e:
-        raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google: {e.response.text}")
+        error_detail = f"Error de Google OAuth: {e.response.status_code} - {e.response.text}"
+        print(error_detail)
+        raise HTTPException(status_code=400, detail=error_detail)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error inesperado: {e}")
+        error_detail = f"Error inesperado: {str(e)}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/api/accounts/status")
 @verify_token
