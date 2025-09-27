@@ -37,33 +37,15 @@ def initialize_firebase_admin_once():
     global db
     if not firebase_admin._apps:
         try:
-            cred_json_str = os.environ["FIREBASE_ADMIN_SDK_JSON"]
-            cred_dict = json.loads(cred_json_str)
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            print("Firebase Admin SDK inicializado con éxito.")
-        except Exception as e:
-            print(f"ERROR CRÍTICO: No se pudo inicializar Firebase Admin SDK: {e}")
-            db = None
-
-try:
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-except KeyError:
-    print("ADVERTENCIA: GEMINI_API_KEY no encontrada. Las funciones de Gemini podrían fallar.")
-
-try:
-    openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    print("Cliente de OpenAI inicializado correctamente.")
-except KeyError:
-    print("ADVERTENCIA CRÍTICA: OPENAI_API_KEY no encontrada. La interpretación de comandos fallará.")
-    openai_client = None
-
-app = FastAPI(
-    title="AgentFlow Production Backend",
-    version="12.0.0"
-)
-
+            cred = credentials.Certificate(json.loads(os.environ["FIREBASE_ADMIN_SDK_JSON"]))
+            firebase_admin.initialize_app(cred); db = firestore.client()
+            print("Firebase Admin SDK inicializado.")
+        except Exception as e: print(f"ERROR CRÍTICO inicializando Firebase: {e}")
+try: genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+except KeyError: print("ADVERTENCIA: GEMINI_API_KEY no encontrada.")
+try: openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+except KeyError: print("ADVERTENCIA: OPENAI_API_KEY no encontrada.")
+app = FastAPI(title="AgentFlow Production Backend", version="13.0.0") # Versión con flujo OAuth corregido
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -75,37 +57,19 @@ def verify_token(f):
     @wraps(f)
     async def decorated(request: Request, *args, **kwargs):
         initialize_firebase_admin_once()
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Falta cabecera de autenticación.")
-        id_token = auth_header.split("Bearer ")[1]
-        try:
-            decoded_token = auth.verify_id_token(id_token)
-            request.state.user = decoded_token
-        except Exception as e:
-            raise HTTPException(status_code=403, detail=f"Error de autenticación: {e}")
+        try: request.state.user = auth.verify_id_token(request.headers.get("Authorization", "").split("Bearer ")[-1])
+        except Exception as e: raise HTTPException(status_code=403, detail=f"Token inválido: {e}")
         return await f(request, *args, **kwargs)
     return decorated
 
 def get_google_service(user_id: str, service_name: str, version: str, scopes: list):
-    if not db: raise Exception("La base de datos no está disponible.")
     doc_ref = db.collection("users").document(user_id).collection("connected_accounts").document("google")
     doc = doc_ref.get()
-    if not doc.exists: raise Exception("El usuario no ha conectado su cuenta de Google.")
-    
-    config = doc.to_dict()
-    creds = Credentials.from_authorized_user_info(config, scopes)
-
+    if not doc.exists: raise Exception("Cuenta de Google no conectada.")
+    config = doc.to_dict(); creds = Credentials.from_authorized_user_info(config, scopes)
     if not creds.valid and creds.expired and creds.refresh_token:
-        print(f"Token de Google para {user_id} expirado. Refrescando...")
         creds.refresh(GoogleAuthRequest())
-        doc_ref.set({
-            'token': creds.token, 'refresh_token': creds.refresh_token,
-            'token_uri': creds.token_uri, 'client_id': creds.client_id,
-            'client_secret': creds.client_secret, 'scopes': creds.scopes
-        })
-        print(f"Token para {user_id} refrescado y guardado con éxito.")
-    
+        doc_ref.set({'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes})
     return build(service_name, version, credentials=creds)
 
 
@@ -317,47 +281,45 @@ async def send_draft(request: Request, draft_id: str):
 # 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2)
 # ==============================================================================
 
-class AuthCode(BaseModel):
+class AuthPayload(BaseModel):
     code: str
+    redirectUri: str
 
 @app.post("/api/connect/google")
 @verify_token
-async def connect_google_account(request: Request, data: AuthCode):
+async def connect_google_account(request: Request, data: AuthPayload):
     user_id = request.state.user["uid"]
     code = data.code
+    frontend_redirect_uri = data.redirectUri # Recibimos la URI del frontend
     
-    # [LA SOLUCIÓN CLAVE]
-    # El backend USA SIEMPRE su propia URI de redirección, la que está autorizada para él.
-    # Ya no depende de lo que le envíe el frontend.
-    backend_redirect_uri = "https://agent-flow-backend-drab.vercel.app/google/callback"
-    
-    if not db:
-        raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
     try:
-        token_url = "https://oauth2.googleapis.com/token"
         payload = {
             "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
             "code": code,
-            "redirect_uri": backend_redirect_uri, # <-- Usamos la del backend
+            "redirect_uri": frontend_redirect_uri, # <-- La usamos aquí para que coincida
             "grant_type": "authorization_code"
         }
-        
-        r = requests.post(token_url, data=payload)
+        r = requests.post("https://oauth2.googleapis.com/token", data=payload)
         r.raise_for_status()
         tokens = r.json()
         
         tokens['client_id'] = os.environ.get("GOOGLE_CLIENT_ID")
         tokens['client_secret'] = os.environ.get("GOOGLE_CLIENT_SECRET")
-
+        
         db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens)
-        return {"status": "success", "message": "Cuenta de Google conectada con éxito."}
-
+        return {"status": "success"}
     except requests.exceptions.HTTPError as e:
-        print(f"ERROR HTTP al intercambiar código: {e.response.text}")
         raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google: {e.response.text}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error inesperado al vincular la cuenta: {e}")
+        raise HTTPException(status_code=500, detail=f"Error inesperado: {e}")
+
+@app.get("/api/accounts/status")
+@verify_token
+async def get_accounts_status(request: Request):
+    user_id = request.state.user["uid"]
+    accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
+    return {"connected": [doc.id for doc in accounts_ref.stream()]}
 
 @app.get("/api/accounts/status")
 @verify_token
