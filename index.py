@@ -317,16 +317,19 @@ async def send_draft(request: Request, draft_id: str):
 # 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2)
 # ==============================================================================
 
-class AuthPayload(BaseModel):
+class AuthCode(BaseModel):
     code: str
-    redirectUri: str
 
 @app.post("/api/connect/google")
 @verify_token
-async def connect_google_account(request: Request, data: AuthPayload):
+async def connect_google_account(request: Request, data: AuthCode):
     user_id = request.state.user["uid"]
     code = data.code
-    frontend_redirect_uri = data.redirectUri
+    
+    # [LA SOLUCIÓN CLAVE]
+    # El backend USA SIEMPRE su propia URI de redirección, la que está autorizada para él.
+    # Ya no depende de lo que le envíe el frontend.
+    backend_redirect_uri = "https://agent-flow-backend-drab.vercel.app/google/callback"
     
     if not db:
         raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
@@ -336,7 +339,7 @@ async def connect_google_account(request: Request, data: AuthPayload):
             "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
             "code": code,
-            "redirect_uri": frontend_redirect_uri, # <-- Se usa la URI del frontend
+            "redirect_uri": backend_redirect_uri, # <-- Usamos la del backend
             "grant_type": "authorization_code"
         }
         
