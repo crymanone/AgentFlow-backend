@@ -1,3 +1,9 @@
+# ==============================================================================
+# AgentFlow Backend - Versión 10.0 (Producción Estable)
+# CEO: Cryman09
+# CTO: Gemini
+# ==============================================================================
+
 import os
 import json
 from functools import wraps
@@ -25,6 +31,7 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 # ==============================================================================
 
 db = None
+openai_client = None
 
 def initialize_firebase_admin_once():
     global db
@@ -43,27 +50,22 @@ def initialize_firebase_admin_once():
 try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 except KeyError:
-    print("ADVERTENCIA: GEMINI_API_KEY no encontrada. Las funciones de Gemini fallarán.")
+    print("ADVERTENCIA: GEMINI_API_KEY no encontrada. Las funciones de Gemini podrían fallar.")
 
 try:
     openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    print("Cliente de OpenAI inicializado correctamente.")
 except KeyError:
-    print("ADVERTENCIA: OPENAI_API_KEY no encontrada. Las funciones de OpenAI fallarán.")
+    print("ADVERTENCIA CRÍTICA: OPENAI_API_KEY no encontrada. La interpretación de comandos fallará.")
     openai_client = None
 
 app = FastAPI(
     title="AgentFlow Production Backend",
-    description="Backend para gestionar la lógica de IA y la conexión con servicios de terceros.",
-    version="9.1.0"
+    version="10.0.0"
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
 
 # ==============================================================================
 # 2. AUTENTICACIÓN Y GESTIÓN DE CREDENCIALES
@@ -76,13 +78,10 @@ def verify_token(f):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Falta cabecera de autenticación.")
-        
         id_token = auth_header.split("Bearer ")[1]
         try:
             decoded_token = auth.verify_id_token(id_token)
             request.state.user = decoded_token
-        except auth.InvalidIdTokenError:
-            raise HTTPException(status_code=403, detail="El token de sesión es inválido.")
         except Exception as e:
             raise HTTPException(status_code=403, detail=f"Error de autenticación: {e}")
         return await f(request, *args, **kwargs)
@@ -90,100 +89,73 @@ def verify_token(f):
 
 def get_google_service(user_id: str, service_name: str, version: str, scopes: list):
     if not db: raise Exception("La base de datos no está disponible.")
-    
     doc_ref = db.collection("users").document(user_id).collection("connected_accounts").document("google")
     doc = doc_ref.get()
-    if not doc.exists:
-        raise Exception("El usuario no ha conectado su cuenta de Google.")
+    if not doc.exists: raise Exception("El usuario no ha conectado su cuenta de Google.")
     
     config = doc.to_dict()
     creds = Credentials.from_authorized_user_info(config, scopes)
 
-    if not creds.valid:
-        if creds.expired and creds.refresh_token:
-            print(f"Token de Google para {user_id} expirado. Refrescando...")
-            creds.refresh(GoogleAuthRequest())
-            new_token_data = {
-                'token': creds.token,
-                'refresh_token': creds.refresh_token,
-                'token_uri': creds.token_uri,
-                'client_id': creds.client_id,
-                'client_secret': creds.client_secret,
-                'scopes': creds.scopes
-            }
-            doc_ref.set(new_token_data)
-            print(f"Token para {user_id} refrescado y guardado con éxito.")
-        else:
-            raise Exception("No se pueden refrescar las credenciales de Google. El usuario necesita reconectarse.")
+    if not creds.valid and creds.expired and creds.refresh_token:
+        print(f"Token de Google para {user_id} expirado. Refrescando...")
+        creds.refresh(GoogleAuthRequest())
+        doc_ref.set({
+            'token': creds.token, 'refresh_token': creds.refresh_token,
+            'token_uri': creds.token_uri, 'client_id': creds.client_id,
+            'client_secret': creds.client_secret, 'scopes': creds.scopes
+        })
+        print(f"Token para {user_id} refrescado y guardado con éxito.")
     
     return build(service_name, version, credentials=creds)
 
+
 # ==============================================================================
 # 3. LÓGICA DE INTELIGENCIA ARTIFICIAL (IA)
-# ... (El resto de la lógica de IA no cambia, se mantiene la versión anterior)
 # ==============================================================================
+
 def interpret_intent_with_openai(text: str) -> dict:
     if not openai_client:
-        raise Exception("El cliente de OpenAI no está inicializado. Verifica la API Key.")
+        raise Exception("El servicio de interpretación de IA no está disponible. Revisa la configuración del servidor (OPENAI_API_KEY).")
     
     system_prompt = """
-    Eres "AuraOS", un sistema operativo de inteligencia artificial ultrapreciso. Tu función es analizar el comando de un usuario y traducirlo a un objeto JSON estructurado. No respondas con texto, solo con el JSON.
-    Acciones válidas: "summarize_inbox", "search_emails", "create_draft", "find_contact", "create_event", "unknown".
-    Parámetros que puedes extraer: "query_text", "time_period", "sender_name", "recipient_email", "recipient_name", "content_summary", "contact_name", "event_summary", "event_date_time", "event_location", "attendees".
-    Ejemplos:
-    - "resume los correos de ayer de sofia" -> {"action": "search_emails", "parameters": {"time_period": "yesterday", "sender_name": "sofia"}}
-    - "crea un borrador para elon@tesla.com sobre la fusión" -> {"action": "create_draft", "parameters": {"recipient_email": "elon@tesla.com", "content_summary": "informar sobre la fusión"}}
-    - "agendame una reunion con jeff mañana a las 3pm en la sala principal" -> {"action": "create_event", "parameters": {"event_summary": "Reunión con Jeff", "attendees": ["jeff"], "event_date_time": "mañana a las 3pm", "event_location": "sala principal"}}
-    Si un parámetro no está presente, omítelo del JSON. Responde únicamente con el objeto JSON.
+    Eres "AuraOS", un sistema operativo de IA. Analiza el comando y tradúcelo a un objeto JSON.
+    Acciones: "summarize_inbox", "search_emails", "create_draft", "find_contact", "create_event", "unknown".
+    Parámetros: "query_text", "time_period" (today, yesterday, last_week), "sender_name", "recipient_email", "recipient_name", "content_summary", "contact_name", "event_summary", "event_date_time", "event_location", "attendees".
+    Ej: "correos de ayer de sofia" -> {"action": "search_emails", "parameters": {"time_period": "yesterday", "sender_name": "sofia"}}
+    Responde solo con el JSON.
     """
     try:
         completion = openai_client.chat.completions.create(
             model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
             response_format={"type": "json_object"}
         )
         response_content = completion.choices[0].message.content
         return json.loads(response_content) if response_content else {"action": "unknown"}
     except Exception as e:
-        print(f"Error en OpenAI: {e}")
-        return {"action": "error", "parameters": {"message": f"IA (OpenAI) no pudo interpretar la intención: {e}"}}
+        raise Exception(f"La IA no pudo procesar la petición: {e}")
 
 def generate_draft_with_gemini(params: dict, original_command: str) -> dict:
     model = genai.GenerativeModel('gemini-2.5-pro')
     prompt = f"""
-    Eres Aura, una asistente ejecutiva de IA experta en comunicación profesional.
-    Tu tarea es redactar un borrador de correo electrónico basado en la petición de un usuario.
-    COMANDO ORIGINAL DEL USUARIO: "{original_command}"
-    OBJETIVO DEL CORREO: "{params.get("content_summary", "No especificado")}"
-    Instrucciones:
-    1.  Infiere el tono (formal, informal, urgente) a partir del comando original.
-    2.  Crea un asunto (subject) claro, conciso y profesional.
-    3.  Redacta el cuerpo (body) del correo. Sé completo pero ve al grano.
-    4.  Si el comando es muy breve, expande el contenido de forma lógica y profesional.
-    5.  Responde ÚNICA Y EXCLUSIVAMENTE con un objeto JSON válido que contenga las claves "subject" y "body". No incluyas texto adicional ni explicaciones.
+    Eres Aura, una asistente ejecutiva de IA. Redacta un borrador de correo electrónico.
+    COMANDO DEL USUARIO: "{original_command}"
+    OBJETIVO: "{params.get("content_summary", "No especificado")}"
+    Instrucciones: Crea un "subject" y un "body" profesionales. Responde solo con un JSON válido.
     """
     try:
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
-        )
+        response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
         return json.loads(response.text)
-    except Exception as e:
-        print(f"Error en Gemini (Draft Generation): {e}")
-        return { "subject": f"Borrador: {params.get('content_summary', 'Asunto pendiente')}", "body": f"Hola,\n\nEste es un borrador generado a partir de la petición: '{original_command}'.\n\nPor favor, complétalo.\n\nSaludos," }
+    except Exception:
+        return {"subject": f"Borrador: {params.get('content_summary', '')}", "body": "Hola,\n\nEscribe aquí tu mensaje.\n\nSaludos,"}
 
 def parse_datetime_with_gemini(text_date: str) -> str:
     model = genai.GenerativeModel('gemini-2.5-pro')
     prompt = f"""
-    Tu única tarea es analizar un texto que describe una fecha y hora y convertirlo a un formato ISO 8601 UTC estricto (YYYY-MM-DDTHH:MM:SSZ).
-    Asume que la fecha de hoy es {datetime.now().strftime('%Y-%m-%d')}.
-    Interpreta frases relativas como "mañana a las 10:30", "lunes que viene a las 3pm", "el 29".
-    Si el texto es ambiguo o no es una fecha válida (ej: "pronto"), devuelve un string que contenga la palabra "ERROR".
-    RESPONDE ÚNICA Y EXCLUSIVAMENTE CON EL STRING ISO 8601 O UN STRING CON "ERROR".
-    Texto a analizar: '{text_date}'
+    Convierte el texto a formato ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ). Hoy es {datetime.now().strftime('%Y-%m-%d')}.
+    Ej: "mañana a las 10:30am" -> (calcula)T10:30:00Z.
+    Si es ambiguo, devuelve "ERROR". Responde solo con el string ISO o "ERROR".
+    Texto: '{text_date}'
     """
     try:
         response = model.generate_content(prompt)
@@ -191,70 +163,93 @@ def parse_datetime_with_gemini(text_date: str) -> str:
         if "ERROR" in iso_date: return ""
         datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
         return iso_date
-    except Exception as e:
-        print(f"Error parseando fecha '{text_date}' con Gemini: {e}")
+    except Exception:
         return ""
 
+def summarize_emails_with_gemini(emails: list) -> str:
+    model = genai.GenerativeModel('gemini-2.5-pro')
+    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva y concisa:\n\n{json.dumps(emails)}'
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+
 # ==============================================================================
-# 4. LÓGICA DE INTEGRACIÓN CON GOOGLE (Gmail, Calendar, Contacts)
-# ... (Sin cambios)
+# 4. LÓGICA DE INTEGRACIÓN CON GOOGLE
 # ==============================================================================
+
+def translate_params_to_gmail_query(params: dict) -> str:
+    query_parts = []
+    if params.get("query_text"): query_parts.append(params["query_text"])
+    if params.get("sender_name"): query_parts.append(f'from:"{params["sender_name"]}"')
+    if params.get("time_period"):
+        period_map = {"today": "newer_than:1d", "yesterday": "older_than:1d newer_than:2d", "last_week": "newer_than:7d"}
+        query_parts.append(period_map.get(params["time_period"], ""))
+    return " ".join(filter(None, query_parts))
+
+def get_real_emails_for_user(user_id: str, search_query: str = "", max_results: int = 10) -> list:
+    try:
+        service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.readonly"])
+        results = service.users().messages().list(userId='me', q=search_query, maxResults=max_results).execute()
+        messages = results.get('messages', [])
+        emails_list = []
+        for message in messages:
+            msg = service.users().messages().get(userId='me', id=message['id'], format='metadata', metadataHeaders=['From', 'Subject']).execute()
+            headers = msg.get('payload', {}).get('headers', [])
+            subject = next((i['value'] for i in headers if i['name'] == 'Subject'), '(Sin Asunto)')
+            sender = next((i['value'] for i in headers if i['name'] == 'From'), 'Desconocido')
+            emails_list.append({"id": msg.get('id'), "from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
+        return emails_list
+    except HttpError as error:
+        raise Exception(f"Error de API de Gmail: {error.reason}")
+
 def search_google_contacts(user_id: str, contact_name: str) -> dict:
     try:
         service = get_google_service(user_id, 'people', 'v1', scopes=["https://www.googleapis.com/auth/contacts.readonly"])
         results = service.people().searchContacts(query=contact_name, readMask="emailAddresses,names").execute()
         contacts = results.get('results', [])
-        if not contacts: raise Exception(f"No he encontrado a nadie llamado '{contact_name}' en tus contactos.")
+        if not contacts: raise Exception(f"No encontré a '{contact_name}' en tus contactos.")
         for person_result in contacts:
             person = person_result.get('person', {})
             emails = person.get('emailAddresses', [])
             if emails: return {"name": person.get('names', [{}])[0].get('displayName', 'N/A'), "email": emails[0].get('value')}
-        raise Exception(f"Encontré a '{contact_name}', pero no tiene una dirección de correo guardada.")
-    except HttpError as e: raise Exception(f"Error con la API de Contactos de Google: {e.reason}")
+        raise Exception(f"Encontré a '{contact_name}', pero no tiene un correo guardado.")
+    except HttpError as e: raise Exception(f"Error con la API de Contactos: {e.reason}")
 
 def create_draft_in_gmail(user_id: str, draft_data: dict):
     try:
-        if not draft_data.get('to'): raise ValueError("El destinatario (to) es obligatorio para crear un borrador.")
+        if not draft_data.get('to'): raise ValueError("Falta el destinatario para crear el borrador.")
         service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.compose"])
         message = MIMEText(draft_data.get('body', '')); message['to'] = draft_data['to']; message['subject'] = draft_data.get('subject', '(Sin asunto)')
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
         draft_body = {'message': {'raw': raw_message}}
-        created_draft = service.users().drafts().create(userId='me', body=draft_body).execute()
-        return created_draft
-    except HttpError as e: raise Exception(f"Error de la API de Gmail: {json.loads(e.content.decode('utf-8'))['error']['message']}")
-    except Exception as e: raise Exception(f"Error creando el borrador: {e}")
+        return service.users().drafts().create(userId='me', body=draft_body).execute()
+    except HttpError as e: raise Exception(f"Error de API de Gmail: {json.loads(e.content.decode('utf-8'))['error']['message']}")
+    except Exception as e: raise Exception(f"Error creando borrador: {e}")
 
 def send_draft_from_gmail(user_id: str, draft_id: str):
     try:
         service = get_google_service(user_id, 'gmail', 'v1', scopes=['https://www.googleapis.com/auth/gmail.compose'])
-        service.users().drafts().send(userId='me', body={'id': draft_id}).execute()
-        return {"status": "success", "message": "Correo enviado con éxito."}
-    except HttpError as error: raise Exception(f"Error de la API de Gmail al enviar: {json.loads(error.content.decode('utf-8'))['error']['message']}")
+        return service.users().drafts().send(userId='me', body={'id': draft_id}).execute()
+    except HttpError as e: raise Exception(f"Error de API de Gmail al enviar: {json.loads(e.content.decode('utf-8'))['error']['message']}")
 
 def create_event_in_calendar(user_id: str, event_details: dict):
     try:
         service = get_google_service(user_id, 'calendar', 'v3', scopes=['https://www.googleapis.com/auth/calendar.events'])
         date_text = event_details.get("event_date_time", "")
-        if not date_text: raise ValueError("La fecha y hora son necesarias para crear un evento.")
+        if not date_text: raise ValueError("Falta la fecha y hora para el evento.")
         start_time_str = parse_datetime_with_gemini(date_text)
-        if not start_time_str: raise ValueError(f"No pude entender la fecha y hora '{date_text}'. Por favor, sé más específico (ej: 'mañana a las 10:30' o '22 de octubre a las 10am').")
+        if not start_time_str: raise ValueError(f"No entendí la fecha '{date_text}'. Intenta ser más específico.")
         start_time_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00")); end_time_dt = start_time_dt + timedelta(hours=1)
-        attendees_list = []
-        if event_details.get("attendees"):
-            for attendee_name in event_details["attendees"]:
-                try:
-                    contact_info = search_google_contacts(user_id, attendee_name)
-                    attendees_list.append({'email': contact_info['email']})
-                except Exception as e: print(f"No se pudo encontrar el email del asistente '{attendee_name}': {e}")
-        event = { 'summary': event_details.get('event_summary', 'Evento de AgentFlow'), 'location': event_details.get('event_location', ''), 'description': f'Evento creado por Aura a partir del comando: "{event_details.get("original_command")}"', 'start': {'dateTime': start_time_dt.isoformat(), 'timeZone': 'UTC'}, 'end': {'dateTime': end_time_dt.isoformat(), 'timeZone': 'UTC'}, 'attendees': attendees_list, }
+        attendees = [{'email': a['email']} for a in [search_google_contacts(user_id, name) for name in event_details.get("attendees", []) if name] if a]
+        event = { 'summary': event_details.get('event_summary', 'Evento de AgentFlow'), 'location': event_details.get('event_location', ''), 'start': {'dateTime': start_time_dt.isoformat(), 'timeZone': 'UTC'}, 'end': {'dateTime': end_time_dt.isoformat(), 'timeZone': 'UTC'}, 'attendees': attendees }
         created_event = service.events().insert(calendarId='primary', body=event, sendNotifications=True).execute()
         return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
-    except HttpError as e: raise Exception(f"Error con la API de Google Calendar: {e.reason}")
+    except HttpError as e: raise Exception(f"Error con la API de Calendar: {e.reason}")
     except Exception as e: raise e
+
 
 # ==============================================================================
 # 5. ENDPOINTS DE LA API (Lógica Principal)
-# ... (Sin cambios)
 # ==============================================================================
 
 @app.get("/")
@@ -268,20 +263,41 @@ async def voice_command(request: Request, data: CommandPayload):
     user_id = request.state.user["uid"]; text = data.text
     try:
         intent = interpret_intent_with_openai(text)
-        action = intent.get("action", "unknown"); params = intent.get("parameters", {}); params['original_command'] = text
-        if action == "create_draft":
+        action = intent.get("action", "unknown")
+        params = intent.get("parameters", {})
+        
+        if action == "unknown":
+            raise Exception("No he entendido tu petición. Por favor, intenta reformularla.")
+
+        if action == "search_emails":
+            query = translate_params_to_gmail_query(params)
+            emails = get_real_emails_for_user(user_id, search_query=query)
+            return {"action": "search_emails_result", "payload": {"emails": emails}}
+
+        elif action == "summarize_inbox":
+            query = translate_params_to_gmail_query(params)
+            emails = get_real_emails_for_user(user_id, search_query=query, max_results=5)
+            if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
+            summary = summarize_emails_with_gemini(emails)
+            return {"action": "summarize_inbox", "payload": {"summary": summary}}
+
+        elif action == "create_draft":
             if params.get("recipient_name") and not params.get("recipient_email"):
-                contact_info = search_google_contacts(user_id, params["recipient_name"])
-                params["recipient_email"] = contact_info['email']
+                contact = search_google_contacts(user_id, params["recipient_name"])
+                params["recipient_email"] = contact['email']
             email_content = generate_draft_with_gemini(params, text)
-            full_draft_data = { "to": params.get("recipient_email"), "subject": email_content.get("subject"), "body": email_content.get("body") }
+            full_draft_data = {"to": params.get("recipient_email"), **email_content}
             created_draft = create_draft_in_gmail(user_id, full_draft_data)
             full_draft_data['id'] = created_draft.get('id')
             return {"action": "draft_created", "payload": {"draft": full_draft_data}}
+
         elif action == "create_event":
             result = create_event_in_calendar(user_id, params)
             return {"action": "event_created", "payload": result}
-        else: return {"action": "unknown", "payload": {"message": f"No he entendido la acción '{action}'. Inténtalo de nuevo."}}
+        
+        else:
+            raise Exception(f"La acción '{action}' todavía no está implementada.")
+
     except Exception as e:
         print(f"ERROR en /api/voice-command para el usuario {user_id}: {e}")
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
@@ -291,14 +307,14 @@ async def voice_command(request: Request, data: CommandPayload):
 async def send_draft(request: Request, draft_id: str):
     user_id = request.state.user["uid"]
     try:
-        result = send_draft_from_gmail(user_id, draft_id)
-        return {"action": "draft_sent", "payload": result}
+        send_draft_from_gmail(user_id, draft_id)
+        return {"action": "draft_sent", "payload": {"message": "Correo enviado con éxito."}}
     except Exception as e:
-        print(f"ERROR al enviar borrador {draft_id} para el usuario {user_id}: {e}")
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
 
+
 # ==============================================================================
-# 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2) - [SECCIÓN CORREGIDA]
+# 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2)
 # ==============================================================================
 
 class AuthCode(BaseModel): code: str
@@ -308,38 +324,25 @@ class AuthCode(BaseModel): code: str
 async def connect_google_account(request: Request, data: AuthCode):
     user_id = request.state.user["uid"]; code = data.code
     if not db: raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
-
     try:
-        token_url = "https://oauth2.googleapis.com/token"
         payload = {
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
-            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-            "code": code,
-            "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback",
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID"), "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
+            "code": code, "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback",
             "grant_type": "authorization_code"
         }
-        
-        r = requests.post(token_url, data=payload)
+        r = requests.post("https://oauth2.googleapis.com/token", data=payload)
         r.raise_for_status()
         tokens = r.json()
         
-        # [LA SOLUCIÓN AL ERROR]
-        # Añadimos el client_id y client_secret al objeto de tokens ANTES de guardarlo.
-        # Esto es crucial para que la librería pueda refrescar el token en el futuro.
         tokens['client_id'] = os.environ.get("GOOGLE_CLIENT_ID")
         tokens['client_secret'] = os.environ.get("GOOGLE_CLIENT_SECRET")
 
-        user_ref = db.collection("users").document(user_id)
-        user_ref.collection("connected_accounts").document("google").set(tokens)
-
+        db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens)
         return {"status": "success", "message": "Cuenta de Google conectada con éxito."}
-
     except requests.exceptions.HTTPError as e:
-        print(f"ERROR HTTP al intercambiar código: {e.response.text}")
-        raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google. Es posible que el código haya expirado.")
+        raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google: {e.response.text}")
     except Exception as e:
-        print(f"ERROR finalizando conexión: {e}")
-        raise HTTPException(status_code=500, detail=f"Ocurrió un error inesperado al vincular la cuenta: {e}")
+        raise HTTPException(status_code=500, detail=f"Error inesperado al vincular la cuenta: {e}")
 
 @app.get("/api/accounts/status")
 @verify_token
@@ -348,10 +351,8 @@ async def get_accounts_status(request: Request):
     if not db: return {"connected": []}
     try:
         accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
-        accounts = [doc.id for doc in accounts_ref.stream()]
-        return {"connected": accounts}
-    except Exception as e:
-        print(f"Error al obtener estado de cuentas para {user_id}: {e}")
+        return {"connected": [doc.id for doc in accounts_ref.stream()]}
+    except Exception:
         return {"connected": []}
 
 @app.get("/google/callback")
