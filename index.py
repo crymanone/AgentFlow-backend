@@ -400,6 +400,9 @@ async def google_callback(request: Request):
 async def google_auth_start(request: Request):
     """Endpoint que inicia el flujo OAuth de Google"""
     try:
+        # ✅ INICIALIZAR FIREBASE PRIMERO
+        initialize_firebase_admin_once()
+        
         firebase_token = request.query_params.get("firebaseToken")
         
         if not firebase_token:
@@ -411,6 +414,8 @@ async def google_auth_start(request: Request):
         # Verificar el token de Firebase
         decoded_token = auth.verify_id_token(firebase_token)
         user_id = decoded_token["uid"]
+        
+        print(f"✅ Iniciando OAuth para usuario: {user_id}")
         
         # Construir la URL de autorización de Google
         scopes = [
@@ -431,20 +436,28 @@ async def google_auth_start(request: Request):
             f"state={user_id}"
         )
         
+        print(f"🔗 Redirigiendo a: {google_auth_url}")
         return RedirectResponse(google_auth_url)
         
     except Exception as e:
+        print(f"❌ Error en /google/auth-start: {str(e)}")
         return JSONResponse(
             status_code=500, 
             content={"error": f"Error iniciando autenticación: {str(e)}"}
         )
+        
 
 @app.get("/google/callback")
 async def google_callback(request: Request):
-    """Callback de Google OAuth con mejor manejo"""
+    """Callback de Google OAuth"""
     try:
+        # ✅ INICIALIZAR FIREBASE PRIMERO
+        initialize_firebase_admin_once()
+        
         code = request.query_params.get("code")
         state = request.query_params.get("state")  # user_id
+        
+        print(f"📥 Callback recibido - code: {code}, state: {state}")
         
         if not code:
             return HTMLResponse(content="""
@@ -469,12 +482,15 @@ async def google_callback(request: Request):
             "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback"
         }
         
+        print("🔄 Intercambiando código por tokens...")
         response = requests.post(token_url, data=payload)
         response.raise_for_status()
         tokens = response.json()
         
+        print("✅ Tokens recibidos de Google")
+        
         # Guardar tokens en Firestore
-        if state:
+        if state and db:
             tokens_to_save = {
                 'token': tokens.get('access_token'),
                 'refresh_token': tokens.get('refresh_token'),
@@ -488,22 +504,19 @@ async def google_callback(request: Request):
             db.collection("users").document(state).collection("connected_accounts").document("google").set(tokens_to_save)
             print(f"✅ Cuenta de Google conectada para usuario {state}")
 
-        # Página de éxito mejorada
+        # Página de éxito
         success_html = """
         <html>
             <head>
                 <title>✅ Conexión Exitosa</title>
                 <script>
                     function closeWindow() {
-                        // Intentar cerrar la ventana
                         if (window.history.length > 1) {
                             window.history.back();
                         } else {
                             window.close();
                         }
                     }
-                    
-                    // Intentar cerrar automáticamente después de 2 segundos
                     setTimeout(() => {
                         closeWindow();
                     }, 2000);
