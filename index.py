@@ -115,8 +115,15 @@ def interpret_intent_with_openai(text: str) -> dict:
     except Exception as e:
         return {"action": "error", "parameters": {"message": f"IA (OpenAI) no pudo interpretar: {e}"}}
 
-def generate_draft_with_gemini(params: dict) -> dict:
-    # [NUEVA VERSIÓN BLINDADA]
+def generate_draft_with_gemini(params: dict, original_command: str) -> dict:
+    content_summary = params.get("content_summary")
+    # [LA MEJORA] Le damos a la IA el comando original completo.
+    prompt = f"""
+    OBJETIVO: "{content_summary}".
+    COMANDO ORIGINAL DEL USUARIO: "{original_command}"
+    
+    A partir del COMANDO ORIGINAL, redacta un correo profesional y completo en JSON (subject, body).
+    """
     model = genai.GenerativeModel('gemini-2.5-pro')
     content_summary = params.get("content_summary", "No especificado.")
     prompt = f'OBJETIVO: "{content_summary}". Escribe un correo profesional y devuelve un JSON con "subject" y "body".'
@@ -198,7 +205,7 @@ def find_contact_in_google(user_id: str, contact_name: str):
     except HttpError as error: raise Exception(f"Error de API de Contactos: {error.reason}")
 
 def parse_datetime_with_gemini(text_date: str) -> str:
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     # [LA CORRECCIÓN] Prompt mucho más robusto con ejemplos claros.
     prompt = f"""
     Tu única tarea es analizar un texto que describe una fecha y hora y convertirlo a un formato ISO 8601 UTC estricto (YYYY-MM-DDTHH:MM:SSZ).
