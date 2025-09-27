@@ -322,15 +322,26 @@ class AuthCode(BaseModel): code: str
 @app.post("/api/connect/google")
 @verify_token
 async def connect_google_account(request: Request, data: AuthCode):
-    user_id = request.state.user["uid"]; code = data.code
-    if not db: raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
+    user_id = request.state.user["uid"]
+    code = data.code
+
+    # La redirect_uri que el backend usa para hablar con Google debe ser la que está
+    # autorizada para el backend, no la que usó el cliente.
+    backend_redirect_uri = "https://agent-flow-backend-drab.vercel.app/google/callback"
+    
+    if not db:
+        raise HTTPException(status_code=500, detail="La base de datos no está inicializada.")
     try:
+        token_url = "https://oauth2.googleapis.com/token"
         payload = {
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID"), "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-            "code": code, "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback",
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
+            "code": code,
+            "redirect_uri": backend_redirect_uri, # Usamos la URI del backend
             "grant_type": "authorization_code"
         }
-        r = requests.post("https://oauth2.googleapis.com/token", data=payload)
+        
+        r = requests.post(token_url, data=payload)
         r.raise_for_status()
         tokens = r.json()
         
@@ -339,6 +350,7 @@ async def connect_google_account(request: Request, data: AuthCode):
 
         db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens)
         return {"status": "success", "message": "Cuenta de Google conectada con éxito."}
+
     except requests.exceptions.HTTPError as e:
         raise HTTPException(status_code=400, detail=f"No se pudo verificar con Google: {e.response.text}")
     except Exception as e:
