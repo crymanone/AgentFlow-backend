@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 import requests
 from email.mime.text import MIMEText
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # --- SDKs y Librerías ---
 import google.generativeai as genai
 import firebase_admin
