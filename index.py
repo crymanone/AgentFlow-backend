@@ -123,7 +123,7 @@ def interpret_intent_with_openai(text: str) -> dict:
     except Exception as e: raise Exception(f"La IA no pudo procesar la petición: {e}")
 
 def generate_draft_with_gemini(params: dict, original_command: str) -> dict:
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     concrete_date = params.get("concrete_date", "")
     date_instruction = f"Si el comando original menciona una fecha, insértala de forma natural en el texto. La fecha concreta es: {concrete_date}." if concrete_date else "No insertes placeholders como '[insertar fecha]'."
     prompt = f"""
@@ -139,7 +139,7 @@ def generate_draft_with_gemini(params: dict, original_command: str) -> dict:
     except Exception as e: return {"subject": f"Borrador: {params.get('content_summary', '')}", "body": f"Petición: '{original_command}' (error de IA: {e})"}
 
 def parse_datetime_for_calendar(text_date: str) -> dict:
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     prompt = f"""
     Analiza un texto de fecha/hora. Hoy es {datetime.now().strftime('%Y-%m-%d')}.
     Responde solo con JSON con "iso_date" (YYYY-MM-DDTHH:MM:SSZ) y "time_specified" (true/false).
@@ -153,7 +153,7 @@ def parse_datetime_for_calendar(text_date: str) -> dict:
     except Exception: return {}
 
 def parse_date_for_email(text_date: str) -> str:
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     prompt = f"""
     Convierte un texto de fecha a formato legible (ej: 'lunes, 29 de septiembre de 2025').
     Hoy es {datetime.now().strftime('%Y-%m-%d')}. Si es ambiguo, devuelve "".
@@ -165,7 +165,7 @@ def parse_date_for_email(text_date: str) -> str:
     except Exception: return ""
 
 def summarize_emails_with_gemini(emails: list) -> str:
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     prompt = f'Eres Aura. Resume estos correos de forma ejecutiva y concisa:\n\n{json.dumps(emails)}'
     return model.generate_content(prompt).text.strip()
 
