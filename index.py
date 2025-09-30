@@ -1,5 +1,5 @@
 # ==============================================================================
-# AgentFlow Backend - Versión 14.0 (Autenticación Estable + IA Mejorada)
+# AgentFlow Backend - Versión 16.0 (Autenticación Estable + Lógica de IA Final)
 # CEO: Cryman09
 # CTO: Gemini
 # ==============================================================================
@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 import requests
 from email.mime.text import MIMEText
-
 from fastapi.middleware.cors import CORSMiddleware
 
 # --- SDKs y Librerías ---
@@ -39,15 +38,15 @@ def initialize_firebase_admin_once():
     global db
     if not firebase_admin._apps:
         try:
-            cred_json_str = os.environ["FIREBASE_ADMIN_SDK_JSON"]
-            cred_dict = json.loads(cred_json_str)
-            cred = credentials.Certificate(cred_dict)
+            cred_json_str = os.environ.get("FIREBASE_ADMIN_SDK_JSON")
+            if not cred_json_str: raise ValueError("FIREBASE_ADMIN_SDK_JSON no está configurada.")
+            cred_path = "/tmp/firebase_creds.json"
+            with open(cred_path, "w") as f: f.write(cred_json_str)
+            cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred)
             db = firestore.client()
             print("Firebase Admin SDK inicializado con éxito.")
-        except Exception as e:
-            print(f"ERROR CRÍTICO: No se pudo inicializar Firebase Admin SDK: {e}")
-            db = None
+        except Exception as e: print(f"ERROR CRÍTICO inicializando Firebase: {e}"); db = None
 
 try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -56,14 +55,13 @@ except KeyError:
 
 try:
     openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    print("Cliente de OpenAI inicializado correctamente.")
+    print("Cliente de OpenAI inicializado.")
 except KeyError:
-    print("ADVERTENCIA CRÍTICA: OPENAI_API_KEY no encontrada.")
+    print("ADVERTENCIA: OPENAI_API_KEY no encontrada.")
     openai_client = None
 
-app = FastAPI(title="AgentFlow Production Backend", version="14.0.0")
+app = FastAPI(title="AgentFlow Production Backend", version="16.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
 
 # ==============================================================================
 # 2. AUTENTICACIÓN Y GESTIÓN DE CREDENCIALES
@@ -73,8 +71,8 @@ def verify_token(f):
     @wraps(f)
     async def decorated(request: Request, *args, **kwargs):
         initialize_firebase_admin_once()
-        id_token = request.headers.get("Authorization", "").split("Bearer ")[-1]
         try:
+            id_token = request.headers.get("Authorization", "").split("Bearer ")[-1]
             request.state.user = auth.verify_id_token(id_token)
         except Exception as e:
             raise HTTPException(status_code=403, detail=f"Token inválido: {e}")
@@ -87,25 +85,21 @@ def get_google_service(user_id: str, service_name: str, version: str, scopes: li
     if not doc.exists: raise Exception("Cuenta de Google no conectada.")
     
     config = doc.to_dict()
-    # Corrige el campo 'token' a 'access_token' si es necesario para compatibilidad
-    if 'token' in config and 'access_token' not in config:
-        config['access_token'] = config.pop('token')
+    if 'token' in config and 'access_token' not in config: config['access_token'] = config.pop('token')
 
     creds = Credentials.from_authorized_user_info(config, scopes)
     if not creds.valid and creds.expired and creds.refresh_token:
         creds.refresh(GoogleAuthRequest())
-        # Guarda usando el formato que espera Credentials.from_authorized_user_info
-        tokens_to_save = {
-            'access_token': creds.token, 'refresh_token': creds.refresh_token, 
-            'token_uri': creds.token_uri, 'client_id': creds.client_id, 
-            'client_secret': creds.client_secret, 'scopes': creds.scopes,
-            'expiry': creds.expiry.isoformat()
+        tokens = {
+            'access_token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri,
+            'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes,
+            'expiry': creds.expiry.isoformat() if creds.expiry else None
         }
-        doc_ref.set(tokens_to_save)
+        doc_ref.set(tokens)
     return build(service_name, version, credentials=creds)
 
 # ==============================================================================
-# 3. LÓGICA DE INTELIGENCIA ARTIFICIAL (IA) - [SECCIÓN MEJORADA]
+# 3. LÓGICA DE IA (Inteligencia Artificial) - [TU LÓGICA INTEGRADA]
 # ==============================================================================
 
 def interpret_intent_with_openai(text: str) -> dict:
@@ -187,14 +181,14 @@ def get_real_emails_for_user(user_id: str, search_query: str = "", max_results: 
     service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.readonly"])
     results = service.users().messages().list(userId='me', q=search_query, maxResults=max_results).execute()
     messages = results.get('messages', [])
-    emails_list = []
+    emails = []
     for msg_info in messages:
         msg = service.users().messages().get(userId='me', id=msg_info['id'], format='metadata', metadataHeaders=['From', 'Subject']).execute()
         headers = msg.get('payload', {}).get('headers', [])
         subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(Sin Asunto)')
         sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Desconocido')
-        emails_list.append({"id": msg['id'], "from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
-    return emails_list
+        emails.append({"id": msg['id'], "from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
+    return emails
 
 def search_google_contacts(user_id: str, contact_name: str) -> dict:
     service = get_google_service(user_id, 'people', 'v1', scopes=["https://www.googleapis.com/auth/contacts.readonly"])
@@ -222,15 +216,13 @@ def create_event_in_calendar(user_id: str, event_details: dict):
     if not date_text: raise ValueError("Falta la fecha para el evento.")
     parsed_info = parse_datetime_for_calendar(date_text)
     if not parsed_info.get("iso_date"): raise ValueError(f"No entendí la fecha '{date_text}'.")
-    
-    event = {'summary': event_details.get('event_summary', 'Evento de AgentFlow'), 'location': event_details.get('event_location', '')}
+    event = {'summary': event_details.get('event_summary', 'Evento'), 'location': event_details.get('event_location', '')}
     if parsed_info.get("time_specified"):
         start_dt = datetime.fromisoformat(parsed_info["iso_date"].replace("Z", "+00:00"))
         event.update({'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'UTC'}, 'end': {'dateTime': (start_dt + timedelta(hours=1)).isoformat(), 'timeZone': 'UTC'}})
     else:
         start_date = datetime.fromisoformat(parsed_info["iso_date"].replace("Z", "+00:00")).date()
         event.update({'start': {'date': start_date.isoformat()}, 'end': {'date': (start_date + timedelta(days=1)).isoformat()}})
-    
     created_event = service.events().insert(calendarId='primary', body=event).execute()
     return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
 
@@ -239,73 +231,43 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 # ==============================================================================
 
 @app.get("/")
-def root(): return {"status": "AgentFlow Backend Activo y Operacional"}
-
-@app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
 
-class AudioPayload(BaseModel):
-    audio: str # El audio vendrá como un string en Base64
-
+class AudioPayload(BaseModel): audio: str
 @app.post("/api/audio-command")
 @verify_token
 async def audio_command(request: Request, data: AudioPayload):
     user_id = request.state.user["uid"]
     try:
-        # 1. Decodificar el audio
         audio_bytes = base64.b64decode(data.audio)
-        
-        # 2. Enviar a Google Speech-to-Text
         client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.MP4, # Expo graba en MP4/M4A en Android
-            sample_rate_hertz=44100,
-            language_code="es-ES"
-        )
+        config = speech.RecognitionConfig(encoding=speech.RecognitionConfig.AudioEncoding.MP4, sample_rate_hertz=44100, language_code="es-ES")
         response = client.recognize(config=config, audio=audio)
-        
-        if not response.results or not response.results[0].alternatives:
-            raise Exception("No se pudo transcribir el audio.")
-        
+        if not response.results or not response.results[0].alternatives: raise Exception("No se pudo transcribir.")
         transcribed_text = response.results[0].alternatives[0].transcript
-        
-        # 3. Reutilizar nuestra lógica de comandos de texto
-        # ¡No reinventamos la rueda! Usamos la función que ya funciona.
-        text_payload = CommandPayload(text=transcribed_text)
-        return await voice_command(request, text_payload)
-
+        return await voice_command(request, CommandPayload(text=transcribed_text))
     except Exception as e:
-        print(f"ERROR en /api/audio-command para {user_id}: {e}")
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
 
-
 class CommandPayload(BaseModel): text: str
-
 @app.post("/api/voice-command")
 @verify_token
 async def voice_command(request: Request, data: CommandPayload):
     user_id = request.state.user["uid"]; text = data.text
     try:
         intent = interpret_intent_with_openai(text)
-        action = intent.get("action", "unknown"); params = intent.get("parameters", {})
+        action, params = intent.get("action", "unknown"), intent.get("parameters", {})
         if action == "unknown": raise Exception("No he entendido tu petición.")
 
         if action == "search_emails":
-            query = translate_params_to_gmail_query(params)
-            emails = get_real_emails_for_user(user_id, search_query=query)
-            return {"action": "search_emails_result", "payload": {"emails": emails}}
-        
+            return {"action": "search_emails_result", "payload": {"emails": get_real_emails_for_user(user_id, search_query=translate_params_to_gmail_query(params))}}
         elif action == "summarize_inbox":
-            query = translate_params_to_gmail_query(params)
-            emails = get_real_emails_for_user(user_id, search_query=query, max_results=5)
-            if not emails: return {"action": "summarize_inbox", "payload": {"summary": "No hay correos que coincidan."}}
-            summary = summarize_emails_with_gemini(emails)
+            emails = get_real_emails_for_user(user_id, search_query=translate_params_to_gmail_query(params), max_results=5)
+            summary = "No hay correos que coincidan." if not emails else summarize_emails_with_gemini(emails)
             return {"action": "summarize_inbox", "payload": {"summary": summary}}
-
         elif action == "create_draft":
-            if params.get("content_date_reference"):
-                params["concrete_date"] = parse_date_for_email(params["content_date_reference"])
+            if params.get("content_date_reference"): params["concrete_date"] = parse_date_for_email(params["content_date_reference"])
             if params.get("recipient_name") and not params.get("recipient_email"):
                 params["recipient_email"] = search_google_contacts(user_id, params["recipient_name"])['email']
             email_content = generate_draft_with_gemini(params, text)
@@ -313,11 +275,8 @@ async def voice_command(request: Request, data: CommandPayload):
             created_draft = create_draft_in_gmail(user_id, full_draft_data)
             full_draft_data['id'] = created_draft.get('id')
             return {"action": "draft_created", "payload": {"draft": full_draft_data}}
-        
         elif action == "create_event":
-            result = create_event_in_calendar(user_id, params)
-            return {"action": "event_created", "payload": result}
-        
+            return {"action": "event_created", "payload": create_event_in_calendar(user_id, params)}
         else: raise Exception(f"La acción '{action}' no está implementada.")
     except Exception as e:
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
@@ -332,9 +291,8 @@ async def send_draft(request: Request, draft_id: str):
     except Exception as e:
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
 
-
 # ==============================================================================
-# 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2)
+# 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2) - [CÓDIGO FUNCIONAL RESTAURADO]
 # ==============================================================================
 
 class AuthPayload(BaseModel):
@@ -344,277 +302,60 @@ class AuthPayload(BaseModel):
 @app.post("/api/connect/google")
 @verify_token
 async def connect_google_account(request: Request, data: AuthPayload):
-    user_id = request.state.user["uid"]
-    code = data.code
-    frontend_redirect_uri = data.redirectUri
-    
+    user_id, code, uri = request.state.user["uid"], data.code, data.redirectUri
     try:
-        # VALIDACIÓN ADICIONAL: Verifica que la redirect_uri sea válida
-        allowed_redirect_uris = [
-            "http://localhost:8081",
-            "exp://localhost:8081",
-            "yourapp://google-callback"  # Agrega tu esquema de deep linking
-        ]
-        
-        if frontend_redirect_uri not in allowed_redirect_uris:
-            print(f"Redirect URI no permitida: {frontend_redirect_uri}")
-            raise HTTPException(status_code=400, detail="Redirect URI no válida")
-        
-        payload = {
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
-            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-            "code": code,
-            "redirect_uri": frontend_redirect_uri,
-            "grant_type": "authorization_code"
-        }
-        
-        print(f"Intercambiando código por token para usuario {user_id}")
-        
-        r = requests.post("https://oauth2.googleapis.com/token", data=payload)
-        r.raise_for_status()
-        tokens = r.json()
-        
-        # Guarda solo los tokens esenciales
-        tokens_to_save = {
-            'token': tokens.get('access_token'),
-            'refresh_token': tokens.get('refresh_token'),
-            'token_uri': 'https://oauth2.googleapis.com/token',
-            'client_id': os.environ.get("GOOGLE_CLIENT_ID"),
-            'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"),
-            'scopes': tokens.get('scope', '').split(' '),
-            'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat()
-        }
-        
+        payload = {"client_id": os.environ.get("GOOGLE_CLIENT_ID"), "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"), "code": code, "redirect_uri": uri, "grant_type": "authorization_code"}
+        r = requests.post("https://oauth2.googleapis.com/token", data=payload); r.raise_for_status(); tokens = r.json()
+        tokens_to_save = {'token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'), 'token_uri': 'https://oauth2.googleapis.com/token', 'client_id': os.environ.get("GOOGLE_CLIENT_ID"), 'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"), 'scopes': tokens.get('scope', '').split(' '), 'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat()}
         db.collection("users").document(user_id).collection("connected_accounts").document("google").set(tokens_to_save)
-        
-        print(f"Cuenta de Google conectada exitosamente para usuario {user_id}")
         return {"status": "success", "message": "Cuenta conectada exitosamente"}
-        
-    except requests.exceptions.HTTPError as e:
-        error_detail = f"Error de Google OAuth: {e.response.status_code} - {e.response.text}"
-        print(error_detail)
-        raise HTTPException(status_code=400, detail=error_detail)
-    except Exception as e:
-        error_detail = f"Error inesperado: {str(e)}"
-        print(error_detail)
-        raise HTTPException(status_code=500, detail=error_detail)
+    except requests.exceptions.HTTPError as e: raise HTTPException(status_code=400, detail=f"Error de Google OAuth: {e.response.text}")
+    except Exception as e: raise HTTPException(status_code=500, detail=f"Error inesperado: {str(e)}")
 
 @app.get("/api/accounts/status")
 @verify_token
 async def get_accounts_status(request: Request):
-    """Endpoint para verificar el estado de las cuentas conectadas - VERSIÓN CORREGIDA"""
-    user_id = request.state.user["uid"]
-    
-    print(f"🔍 Verificando estado de cuentas para usuario: {user_id}")
-    
-    # ✅ Asegurar que Firebase esté inicializado
-    initialize_firebase_admin_once()
-    
-    if not db:
-        print("❌ Base de datos no disponible")
-        return {"connected": []}
-    
+    user_id = request.state.user["uid"];
+    if not db: return {"connected": []}
     try:
-        accounts_ref = db.collection("users").document(user_id).collection("connected_accounts")
-        docs = accounts_ref.stream()
-        
-        connected_accounts = []
-        for doc in docs:
-            print(f"✅ Cuenta encontrada: {doc.id}")
-            connected_accounts.append(doc.id)
-        
-        print(f"📊 Cuentas conectadas para {user_id}: {connected_accounts}")
-        return {"connected": connected_accounts}
-        
-    except Exception as e:
-        print(f"❌ Error verificando estado de cuentas: {e}")
-        return {"connected": []}
-
+        ref = db.collection("users").document(user_id).collection("connected_accounts")
+        return {"connected": [doc.id for doc in ref.stream()]}
+    except Exception: return {"connected": []}
 
 @app.get("/google/auth-start")
 async def google_auth_start(request: Request):
-    """Endpoint que inicia el flujo OAuth de Google"""
     try:
-        # ✅ INICIALIZAR FIREBASE PRIMERO
-        initialize_firebase_admin_once()
-        
-        firebase_token = request.query_params.get("firebaseToken")
-        
-        if not firebase_token:
-            return JSONResponse(
-                status_code=400, 
-                content={"error": "Token de Firebase requerido"}
-            )
-        
-        # Verificar el token de Firebase
-        decoded_token = auth.verify_id_token(firebase_token)
-        user_id = decoded_token["uid"]
-        
-        print(f"✅ Iniciando OAuth para usuario: {user_id}")
-        
-        # Construir la URL de autorización de Google
-        scopes = [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.compose", 
-            "https://www.googleapis.com/auth/calendar.events",
-            "https://www.googleapis.com/auth/contacts.readonly"
-        ]
-        
-        google_auth_url = (
-            "https://accounts.google.com/o/oauth2/v2/auth?"
-            f"client_id={os.environ.get('GOOGLE_CLIENT_ID')}&"
-            f"redirect_uri=https://agent-flow-backend-drab.vercel.app/google/callback&"
-            f"response_type=code&"
-            f"scope={'%20'.join(scopes)}&"
-            f"access_type=offline&"
-            f"prompt=consent&"
-            f"state={user_id}"
-        )
-        
-        print(f"🔗 Redirigiendo a: {google_auth_url}")
+        initialize_firebase_admin_once(); firebase_token = request.query_params.get("firebaseToken")
+        if not firebase_token: return JSONResponse(status_code=400, content={"error": "Token de Firebase requerido"})
+        user_id = auth.verify_id_token(firebase_token)["uid"]
+        scopes = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/contacts.readonly"]
+        google_auth_url = (f"https://accounts.google.com/o/oauth2/v2/auth?client_id={os.environ.get('GOOGLE_CLIENT_ID')}&redirect_uri=https://agent-flow-backend-drab.vercel.app/google/callback&response_type=code&scope={'%20'.join(scopes)}&access_type=offline&prompt=consent&state={user_id}")
         return RedirectResponse(google_auth_url)
-        
-    except Exception as e:
-        print(f"❌ Error en /google/auth-start: {str(e)}")
-        return JSONResponse(
-            status_code=500, 
-            content={"error": f"Error iniciando autenticación: {str(e)}"}
-        )
-        
+    except Exception as e: return JSONResponse(status_code=500, content={"error": f"Error iniciando autenticación: {str(e)}"})
 
 @app.get("/google/callback")
 async def google_callback(request: Request):
-    """Callback de Google OAuth"""
     try:
-        # ✅ INICIALIZAR FIREBASE PRIMERO
-        initialize_firebase_admin_once()
-        
-        code = request.query_params.get("code")
-        state = request.query_params.get("state")  # user_id
-        
-        print(f"📥 Callback recibido - code: {code}, state: {state}")
-        
-        if not code:
-            return HTMLResponse(content="""
-            <html>
-                <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
-                    <h1>❌ Error</h1>
-                    <p>No se recibió el código de autorización.</p>
-                    <button onclick="window.close()" style="background: #FF6B6B; padding: 10px 20px; border: none; border-radius: 5px; color: white; cursor: pointer;">
-                        Cerrar
-                    </button>
-                </body>
-            </html>
-            """)
-
-        # Intercambiar código por tokens
-        token_url = "https://oauth2.googleapis.com/token"
-        payload = {
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
-            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-            "code": code,
-            "grant_type": "authorization_code",
-            "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback"
-        }
-        
-        print("🔄 Intercambiando código por tokens...")
-        response = requests.post(token_url, data=payload)
-        response.raise_for_status()
-        tokens = response.json()
-        
-        print("✅ Tokens recibidos de Google")
-        
-        # Guardar tokens en Firestore
+        initialize_firebase_admin_once(); code, state = request.query_params.get("code"), request.query_params.get("state")
+        if not code: return HTMLResponse("<h1>Error: No se recibió código.</h1>")
+        payload = {"client_id": os.environ.get("GOOGLE_CLIENT_ID"), "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"), "code": code, "grant_type": "authorization_code", "redirect_uri": "https://agent-flow-backend-drab.vercel.app/google/callback"}
+        response = requests.post("https://oauth2.googleapis.com/token", data=payload); response.raise_for_status(); tokens = response.json()
         if state and db:
-            tokens_to_save = {
-                'token': tokens.get('access_token'),
-                'refresh_token': tokens.get('refresh_token'),
-                'client_id': os.environ.get("GOOGLE_CLIENT_ID"),
-                'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"),
-                'scopes': tokens.get('scope', '').split(),
-                'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat(),
-                'connected_at': datetime.now(timezone.utc).isoformat()
-            }
-            
+            tokens_to_save = {'token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'), 'client_id': os.environ.get("GOOGLE_CLIENT_ID"), 'client_secret': os.environ.get("GOOGLE_CLIENT_SECRET"), 'scopes': tokens.get('scope', '').split(), 'expiry': (datetime.now(timezone.utc) + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat(), 'connected_at': datetime.now(timezone.utc).isoformat()}
             db.collection("users").document(state).collection("connected_accounts").document("google").set(tokens_to_save)
-            print(f"✅ Cuenta de Google conectada para usuario {state}")
-
-        # Página de éxito
-        success_html = """
-        <html>
-            <head>
-                <title>✅ Conexión Exitosa</title>
-                <script>
-                    function closeWindow() {
-                        if (window.history.length > 1) {
-                            window.history.back();
-                        } else {
-                            window.close();
-                        }
-                    }
-                    setTimeout(() => {
-                        closeWindow();
-                    }, 2000);
-                </script>
-            </head>
-            <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
-                <h1 style="color: #4CAF50;">✅ ¡Conexión Exitosa!</h1>
-                <p>Tu cuenta de Google ha sido conectada correctamente.</p>
-                <p>Esta ventana se cerrará automáticamente en 2 segundos...</p>
-                <div style="margin-top: 30px;">
-                    <button onclick="closeWindow()" style="background: #1E90FF; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 16px;">
-                        Cerrar Ventana Ahora
-                    </button>
-                </div>
-            </body>
-        </html>
-        """
-        return HTMLResponse(content=success_html)
-        
-    except Exception as e:
-        print(f"❌ Error en callback: {str(e)}")
-        error_html = f"""
-        <html>
-            <body style="background: #0D142E; color: white; text-align: center; padding: 50px; font-family: Arial;">
-                <h1 style="color: #FF6B6B;">❌ Error de Conexión</h1>
-                <p>Ha ocurrido un error: {str(e)}</p>
-                <p>Por favor, intenta nuevamente.</p>
-                <button onclick="window.close()" style="background: #FF6B6B; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
-                    Cerrar y Reintentar
-                </button>
-            </body>
-        </html>
-        """
-        return HTMLResponse(content=error_html)  
+        return HTMLResponse("<h1>Conexión Exitosa!</h1><p>Puedes cerrar esta ventana.</p><script>setTimeout(window.close, 1000)</script>")
+    except Exception as e: return HTMLResponse(f"<h1>Error</h1><p>{str(e)}</p>")
 
 @app.get("/api/debug/google-status")
 @verify_token
 async def debug_google_status(request: Request):
-    """Endpoint de diagnóstico para verificar el estado de Google"""
     user_id = request.state.user["uid"]
-    
-    print(f"🔍 Diagnóstico Google para usuario: {user_id}")
-    
-    initialize_firebase_admin_once()
-    
-    if not db:
-        return {"error": "Database not available"}
-    
+    if not db: return {"error": "Database not available"}
     try:
-        # Verificar si existe el documento de Google
         google_doc = db.collection("users").document(user_id).collection("connected_accounts").document("google").get()
-        
         if google_doc.exists:
             data = google_doc.to_dict()
-            return {
-                "connected": True,
-                "has_token": bool(data.get('token')),
-                "has_refresh_token": bool(data.get('refresh_token')),
-                "scopes": data.get('scopes', []),
-                "connected_at": data.get('connected_at')
-            }
+            return {"connected": True, "has_token": bool(data.get('token')), "has_refresh_token": bool(data.get('refresh_token')), "scopes": data.get('scopes', []), "connected_at": data.get('connected_at')}
         else:
             return {"connected": False, "reason": "Google document does not exist"}
-            
-    except Exception as e:
-        return {"connected": False, "error": str(e)}          
+    except Exception as e: return {"connected": False, "error": str(e)}
