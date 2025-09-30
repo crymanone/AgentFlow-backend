@@ -1,5 +1,5 @@
 # ==============================================================================
-# AgentFlow Backend - Versión 16.0 (Autenticación Estable + Lógica de IA Final)
+# AgentFlow Backend - Versión 17.0 (Base Estable Restaurada + IA Mejorada)
 # CEO: Cryman09
 # CTO: Gemini
 # ==============================================================================
@@ -40,13 +40,18 @@ def initialize_firebase_admin_once():
         try:
             cred_json_str = os.environ.get("FIREBASE_ADMIN_SDK_JSON")
             if not cred_json_str: raise ValueError("FIREBASE_ADMIN_SDK_JSON no está configurada.")
+            # Para entornos serverless como Vercel, es mejor escribir las credenciales en un archivo temporal
             cred_path = "/tmp/firebase_creds.json"
-            with open(cred_path, "w") as f: f.write(cred_json_str)
+            with open(cred_path, "w") as f:
+                f.write(cred_json_str)
+            
             cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred)
             db = firestore.client()
             print("Firebase Admin SDK inicializado con éxito.")
-        except Exception as e: print(f"ERROR CRÍTICO inicializando Firebase: {e}"); db = None
+        except Exception as e:
+            print(f"ERROR CRÍTICO inicializando Firebase: {e}")
+            db = None
 
 try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -60,7 +65,7 @@ except KeyError:
     print("ADVERTENCIA: OPENAI_API_KEY no encontrada.")
     openai_client = None
 
-app = FastAPI(title="AgentFlow Production Backend", version="16.0.0")
+app = FastAPI(title="AgentFlow Production Backend", version="17.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ==============================================================================
@@ -90,12 +95,12 @@ def get_google_service(user_id: str, service_name: str, version: str, scopes: li
     creds = Credentials.from_authorized_user_info(config, scopes)
     if not creds.valid and creds.expired and creds.refresh_token:
         creds.refresh(GoogleAuthRequest())
-        tokens = {
+        tokens_to_save = {
             'access_token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri,
             'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes,
             'expiry': creds.expiry.isoformat() if creds.expiry else None
         }
-        doc_ref.set(tokens)
+        doc_ref.set(tokens_to_save)
     return build(service_name, version, credentials=creds)
 
 # ==============================================================================
@@ -118,50 +123,34 @@ def interpret_intent_with_openai(text: str) -> dict:
     except Exception as e: raise Exception(f"La IA no pudo procesar la petición: {e}")
 
 def generate_draft_with_gemini(params: dict, original_command: str) -> dict:
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
     concrete_date = params.get("concrete_date", "")
-    date_instruction = f"Si el comando original menciona una fecha, insértala de forma natural en el texto. La fecha concreta es: {concrete_date}." if concrete_date else "No insertes placeholders como '[insertar fecha]'."
-    prompt = f"""
-    Eres Aura. Redacta un borrador de correo.
-    COMANDO: "{original_command}"
-    OBJETIVO: "{params.get("content_summary", "No especificado")}"
-    FECHA: {date_instruction}
-    Instrucciones: Crea "subject" y "body" profesionales. Responde solo con un JSON.
-    """
+    date_instruction = f"Si el comando menciona una fecha, insértala de forma natural. La fecha es: {concrete_date}." if concrete_date else "No insertes placeholders de fecha."
+    prompt = f'Eres Aura. Redacta un borrador de correo. COMANDO: "{original_command}". OBJETIVO: "{params.get("content_summary", "")}". FECHA: {date_instruction}. Instrucciones: Crea "subject" y "body" profesionales. Responde solo con JSON.'
     try:
         response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
         return json.loads(response.text)
-    except Exception as e: return {"subject": f"Borrador: {params.get('content_summary', '')}", "body": f"Petición: '{original_command}' (error de IA: {e})"}
+    except Exception as e: return {"subject": f"Borrador: {params.get('content_summary', '')}", "body": f"Petición: '{original_command}' (error IA: {e})"}
 
 def parse_datetime_for_calendar(text_date: str) -> dict:
-    model = genai.GenerativeModel('gemini-2.5-pro')
-    prompt = f"""
-    Analiza un texto de fecha/hora. Hoy es {datetime.now().strftime('%Y-%m-%d')}.
-    Responde solo con JSON con "iso_date" (YYYY-MM-DDTHH:MM:SSZ) y "time_specified" (true/false).
-    Ej: "mañana a las 10am" -> {{"iso_date": "(mañana)T10:00:00Z", "time_specified": true}}
-    Ej: "el día 30" -> {{"iso_date": "(día 30)T09:00:00Z", "time_specified": false}}
-    Si es ambiguo, devuelve {{}}. Texto: '{text_date}'
-    """
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    prompt = f'Analiza texto de fecha/hora. Hoy es {datetime.now().strftime("%Y-%m-%d")}. Responde solo con JSON: "iso_date" (YYYY-MM-DDTHH:MM:SSZ) y "time_specified" (true/false). Ej: "mañana a las 10am" -> {{"iso_date": "(mañana)T10:00:00Z", "time_specified": true}}. Ej: "el día 30" -> {{"iso_date": "(día 30)T09:00:00Z", "time_specified": false}}. Si es ambiguo, devuelve {{}}. Texto: "{text_date}"'
     try:
         response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
         return json.loads(response.text)
     except Exception: return {}
 
 def parse_date_for_email(text_date: str) -> str:
-    model = genai.GenerativeModel('gemini-2.5-pro')
-    prompt = f"""
-    Convierte un texto de fecha a formato legible (ej: 'lunes, 29 de septiembre de 2025').
-    Hoy es {datetime.now().strftime('%Y-%m-%d')}. Si es ambiguo, devuelve "".
-    Responde solo con el string de la fecha. Texto: '{text_date}'
-    """
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    prompt = f"Convierte a fecha legible (ej: 'lunes, 29 de septiembre de 2025'). Hoy es {datetime.now().strftime('%Y-%m-%d')}. Si es ambiguo, devuelve ''. Responde solo con el string. Texto: '{text_date}'"
     try:
         response = model.generate_content(prompt); date_str = response.text.strip().replace("`", "")
         return "" if "ERROR" in date_str else date_str
     except Exception: return ""
 
 def summarize_emails_with_gemini(emails: list) -> str:
-    model = genai.GenerativeModel('gemini-2.5-pro')
-    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva y concisa:\n\n{json.dumps(emails)}'
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    prompt = f'Eres Aura. Resume estos correos de forma ejecutiva:\n\n{json.dumps(emails)}'
     return model.generate_content(prompt).text.strip()
 
 # ==============================================================================
@@ -184,27 +173,26 @@ def get_real_emails_for_user(user_id: str, search_query: str = "", max_results: 
     emails = []
     for msg_info in messages:
         msg = service.users().messages().get(userId='me', id=msg_info['id'], format='metadata', metadataHeaders=['From', 'Subject']).execute()
-        headers = msg.get('payload', {}).get('headers', [])
-        subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(Sin Asunto)')
-        sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Desconocido')
+        headers, subject, sender = msg.get('payload', {}).get('headers', []), '(Sin Asunto)', 'Desconocido'
+        for h in headers:
+            if h['name'] == 'Subject': subject = h['value']
+            if h['name'] == 'From': sender = h['value']
         emails.append({"id": msg['id'], "from": sender, "subject": subject, "snippet": msg.get('snippet', '')})
     return emails
 
 def search_google_contacts(user_id: str, contact_name: str) -> dict:
     service = get_google_service(user_id, 'people', 'v1', scopes=["https://www.googleapis.com/auth/contacts.readonly"])
     results = service.people().searchContacts(query=contact_name, readMask="emailAddresses,names").execute()
-    contacts = results.get('results', [])
-    if not contacts: raise Exception(f"No encontré a '{contact_name}'.")
-    for person_result in contacts:
+    for person_result in results.get('results', []):
         person = person_result.get('person', {})
         if person.get('emailAddresses'): return {"name": person.get('names', [{}])[0].get('displayName', 'N/A'), "email": person['emailAddresses'][0].get('value')}
-    raise Exception(f"Encontré a '{contact_name}', pero sin correo.")
+    raise Exception(f"No se encontró un contacto con email para '{contact_name}'.")
 
 def create_draft_in_gmail(user_id: str, draft_data: dict):
     service = get_google_service(user_id, 'gmail', 'v1', scopes=["https://www.googleapis.com/auth/gmail.compose"])
     message = MIMEText(draft_data.get('body', '')); message['to'] = draft_data['to']; message['subject'] = draft_data.get('subject', '(Sin asunto)')
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
-    return service.users().drafts().create(userId='me', body={'message': {'raw': raw_message}}).execute()
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    return service.users().drafts().create(userId='me', body={'message': {'raw': raw}}).execute()
 
 def send_draft_from_gmail(user_id: str, draft_id: str):
     service = get_google_service(user_id, 'gmail', 'v1', scopes=['https://www.googleapis.com/auth/gmail.compose'])
@@ -216,6 +204,7 @@ def create_event_in_calendar(user_id: str, event_details: dict):
     if not date_text: raise ValueError("Falta la fecha para el evento.")
     parsed_info = parse_datetime_for_calendar(date_text)
     if not parsed_info.get("iso_date"): raise ValueError(f"No entendí la fecha '{date_text}'.")
+    
     event = {'summary': event_details.get('event_summary', 'Evento'), 'location': event_details.get('event_location', '')}
     if parsed_info.get("time_specified"):
         start_dt = datetime.fromisoformat(parsed_info["iso_date"].replace("Z", "+00:00"))
@@ -223,6 +212,7 @@ def create_event_in_calendar(user_id: str, event_details: dict):
     else:
         start_date = datetime.fromisoformat(parsed_info["iso_date"].replace("Z", "+00:00")).date()
         event.update({'start': {'date': start_date.isoformat()}, 'end': {'date': (start_date + timedelta(days=1)).isoformat()}})
+    
     created_event = service.events().insert(calendarId='primary', body=event).execute()
     return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
 
@@ -237,7 +227,6 @@ class AudioPayload(BaseModel): audio: str
 @app.post("/api/audio-command")
 @verify_token
 async def audio_command(request: Request, data: AudioPayload):
-    user_id = request.state.user["uid"]
     try:
         audio_bytes = base64.b64decode(data.audio)
         client = speech.SpeechClient()
