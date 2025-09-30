@@ -26,6 +26,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.cloud import speech
 
 # ==============================================================================
 # 1. INICIALIZACIÓN DE SERVICIOS GLOBALES
@@ -239,6 +240,45 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo y Operacional"}
+
+@app.get("/")
+def root(): return {"status": "AgentFlow Backend Activo"}
+
+class AudioPayload(BaseModel):
+    audio: str # El audio vendrá como un string en Base64
+
+@app.post("/api/audio-command")
+@verify_token
+async def audio_command(request: Request, data: AudioPayload):
+    user_id = request.state.user["uid"]
+    try:
+        # 1. Decodificar el audio
+        audio_bytes = base64.b64decode(data.audio)
+        
+        # 2. Enviar a Google Speech-to-Text
+        client = speech.SpeechClient()
+        audio = speech.RecognitionAudio(content=audio_bytes)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.MP4, # Expo graba en MP4/M4A en Android
+            sample_rate_hertz=44100,
+            language_code="es-ES"
+        )
+        response = client.recognize(config=config, audio=audio)
+        
+        if not response.results or not response.results[0].alternatives:
+            raise Exception("No se pudo transcribir el audio.")
+        
+        transcribed_text = response.results[0].alternatives[0].transcript
+        
+        # 3. Reutilizar nuestra lógica de comandos de texto
+        # ¡No reinventamos la rueda! Usamos la función que ya funciona.
+        text_payload = CommandPayload(text=transcribed_text)
+        return await voice_command(request, text_payload)
+
+    except Exception as e:
+        print(f"ERROR en /api/audio-command para {user_id}: {e}")
+        return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
+
 
 class CommandPayload(BaseModel): text: str
 
