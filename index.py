@@ -223,9 +223,10 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
 
+# [LA SOLUCIÓN CLAVE]
 class AudioPayload(BaseModel):
     audio: str
-    transcribeOnly: bool = False # <-- Nueva bandera
+    transcribeOnly: bool = False
 
 @app.post("/api/audio-command")
 @verify_token
@@ -234,20 +235,21 @@ async def audio_command(request: Request, data: AudioPayload):
         audio_bytes = base64.b64decode(data.audio)
         client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
-        config = speech.RecognitionConfig(encoding=speech.RecognitionConfig.AudioEncoding.MP4, sample_rate_hertz=44100, language_code="es-ES")
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.M4A, # Expo graba en M4A/MP4
+            sample_rate_hertz=44100,
+            language_code="es-ES"
+        )
         response = client.recognize(config=config, audio=audio)
         
         if not response.results or not response.results[0].alternatives:
-            raise Exception("No se pudo transcribir.")
+            raise Exception("No se pudo transcribir el audio.")
         
         transcribed_text = response.results[0].alternatives[0].transcript
         
-        # [LA SOLUCIÓN CLAVE]
         if data.transcribeOnly:
-            # Si solo queremos transcribir, devolvemos el texto
             return {"action": "transcription_result", "payload": {"transcribed_text": transcribed_text}}
         else:
-            # Si queremos ejecutar el comando, reutilizamos la lógica de texto
             return await voice_command(request, CommandPayload(text=transcribed_text))
             
     except Exception as e:
