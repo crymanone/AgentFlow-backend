@@ -224,22 +224,17 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
 
-class AudioPayload(BaseModel):
-    audio: str
-    transcribeOnly: bool = False
-
 @app.post("/api/audio-upload")
 @verify_token
 async def audio_upload(request: Request, file: UploadFile = File(...)):
+    # Esta función ahora funcionará porque `UploadFile` y `File` están definidos.
     try:
-        # 1. Leemos los bytes directamente del archivo subido
         audio_bytes = await file.read()
-        
-        # 2. Transcribimos con Google Speech-to-Text
         client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
         config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16, # Formato WAV es más compatible
+            # Usaremos LINEAR16, que es más universal, y lo forzaremos en el frontend.
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16, 
             sample_rate_hertz=16000,
             language_code="es-ES"
         )
@@ -250,7 +245,6 @@ async def audio_upload(request: Request, file: UploadFile = File(...)):
         
         transcribed_text = response.results[0].alternatives[0].transcript
         
-        # 3. Reutilizamos nuestra lógica de comandos de texto
         return await voice_command(request, CommandPayload(text=transcribed_text))
             
     except Exception as e:
