@@ -216,14 +216,14 @@ def create_event_in_calendar(user_id: str, event_details: dict):
     created_event = service.events().insert(calendarId='primary', body=event).execute()
     return {"message": f"Evento '{created_event.get('summary')}' creado.", "url": created_event.get('htmlLink')}
 
+
 # ==============================================================================
-# 5. ENDPOINTS DE LA API (Lógica Principal)
+# 5. ENDPOINTS DE LA API (Lógica Principal) - SECCIÓN CORREGIDA
 # ==============================================================================
 
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
 
-# [LA SOLUCIÓN CLAVE]
 class AudioPayload(BaseModel):
     audio: str
     transcribeOnly: bool = False
@@ -235,15 +235,19 @@ async def audio_command(request: Request, data: AudioPayload):
         audio_bytes = base64.b64decode(data.audio)
         client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
+        
+        # [LA SOLUCIÓN CLAVE Y DEFINITIVA]
+        # El contenedor es MP4, no M4A. La API de Google sí entiende este.
         config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.M4A, # Expo graba en M4A/MP4
+            encoding=speech.RecognitionConfig.AudioEncoding.MP4,
             sample_rate_hertz=44100,
             language_code="es-ES"
         )
+        
         response = client.recognize(config=config, audio=audio)
         
         if not response.results or not response.results[0].alternatives:
-            raise Exception("No se pudo transcribir el audio.")
+            raise Exception("No se pudo transcribir el audio (respuesta vacía de la IA).")
         
         transcribed_text = response.results[0].alternatives[0].transcript
         
@@ -253,12 +257,16 @@ async def audio_command(request: Request, data: AudioPayload):
             return await voice_command(request, CommandPayload(text=transcribed_text))
             
     except Exception as e:
+        # Añadimos un log más detallado para Vercel
+        print(f"ERROR EN /api/audio-command: {str(e)}")
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
+
 
 class CommandPayload(BaseModel): text: str
 @app.post("/api/voice-command")
 @verify_token
 async def voice_command(request: Request, data: CommandPayload):
+    # (El resto de esta función es correcta y no necesita cambios)
     user_id = request.state.user["uid"]; text = data.text
     try:
         intent = interpret_intent_with_openai(text)
