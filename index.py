@@ -228,37 +228,33 @@ class AudioPayload(BaseModel):
     audio: str
     transcribeOnly: bool = False
 
-@app.post("/api/audio-command")
+@app.post("/api/audio-upload")
 @verify_token
-async def audio_command(request: Request, data: AudioPayload):
+async def audio_upload(request: Request, file: UploadFile = File(...)):
     try:
-        audio_bytes = base64.b64decode(data.audio)
+        # 1. Leemos los bytes directamente del archivo subido
+        audio_bytes = await file.read()
+        
+        # 2. Transcribimos con Google Speech-to-Text
         client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
-        
-        # [LA SOLUCIÓN CLAVE Y DEFINITIVA]
-        # El contenedor es MP4, no M4A. La API de Google sí entiende este.
         config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.MP4,
-            sample_rate_hertz=44100,
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16, # Formato WAV es más compatible
+            sample_rate_hertz=16000,
             language_code="es-ES"
         )
-        
         response = client.recognize(config=config, audio=audio)
         
         if not response.results or not response.results[0].alternatives:
-            raise Exception("No se pudo transcribir el audio (respuesta vacía de la IA).")
+            raise Exception("No se pudo transcribir el audio.")
         
         transcribed_text = response.results[0].alternatives[0].transcript
         
-        if data.transcribeOnly:
-            return {"action": "transcription_result", "payload": {"transcribed_text": transcribed_text}}
-        else:
-            return await voice_command(request, CommandPayload(text=transcribed_text))
+        # 3. Reutilizamos nuestra lógica de comandos de texto
+        return await voice_command(request, CommandPayload(text=transcribed_text))
             
     except Exception as e:
-        # Añadimos un log más detallado para Vercel
-        print(f"ERROR EN /api/audio-command: {str(e)}")
+        print(f"ERROR EN /api/audio-upload: {str(e)}")
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
 
 
