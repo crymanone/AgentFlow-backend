@@ -9,7 +9,7 @@ import json
 from functools import wraps
 import base64
 from datetime import datetime, date, timezone, timedelta
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 import requests
