@@ -225,26 +225,24 @@ def root(): return {"status": "AgentFlow Backend Activo"}
 @app.post("/api/audio-upload")
 @verify_token
 async def audio_upload(request: Request, file: UploadFile = File(...)):
-    initialize_firebase_admin_once() # Aseguramos que las credenciales estén cargadas
-    if not google_creds:
-        raise HTTPException(status_code=500, detail="Las credenciales del servidor no están configuradas.")
-        
     try:
         audio_bytes = await file.read()
-        
-        # [LA SOLUCIÓN CLAVE] - Le pasamos las credenciales explícitamente al cliente
-        client = speech.SpeechClient(credentials=google_creds)
-        
+        client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
+        
+        # [LA SOLUCIÓN CLAVE]
+        # Le decimos a Google que el formato es MP4 (el contenedor de M4A/AAC).
+        # Este es el formato que SÍ soporta.
         config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
+            encoding=speech.RecognitionConfig.AudioEncoding.MP4,
+            sample_rate_hertz=44100,
             language_code="es-ES"
         )
+        
         response = client.recognize(config=config, audio=audio)
         
         if not response.results or not response.results[0].alternatives:
-            raise Exception("No se pudo transcribir el audio.")
+            raise Exception("No se pudo transcribir el audio (respuesta vacía de la IA).")
         
         transcribed_text = response.results[0].alternatives[0].transcript
         
