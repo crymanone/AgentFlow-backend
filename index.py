@@ -26,6 +26,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.cloud import speech
+from google.oauth2 import service_account
 
 # ==============================================================================
 # 1. INICIALIZACIÓN DE SERVICIOS GLOBALES
@@ -33,39 +34,36 @@ from google.cloud import speech
 
 db = None
 openai_client = None
+google_creds = None
 
 def initialize_firebase_admin_once():
-    global db
+    global db, google_creds
     if not firebase_admin._apps:
         try:
             cred_json_str = os.environ.get("FIREBASE_ADMIN_SDK_JSON")
-            if not cred_json_str: raise ValueError("FIREBASE_ADMIN_SDK_JSON no está configurada.")
-            # Para entornos serverless como Vercel, es mejor escribir las credenciales en un archivo temporal
-            cred_path = "/tmp/firebase_creds.json"
-            with open(cred_path, "w") as f:
-                f.write(cred_json_str)
+            if not cred_json_str: raise ValueError("FIREBASE_ADMIN_SDK_JSON no configurada.")
             
-            cred = credentials.Certificate(cred_path)
+            cred_dict = json.loads(cred_json_str)
+            
+            # 1. Usamos el diccionario para las credenciales de Google Cloud
+            google_creds = service_account.Credentials.from_service_account_info(cred_dict)
+            
+            # 2. Usamos el diccionario para inicializar Firebase Admin
+            cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
             db = firestore.client()
-            print("Firebase Admin SDK inicializado con éxito.")
+            print("Firebase y Credenciales de Google Cloud inicializadas con éxito.")
         except Exception as e:
-            print(f"ERROR CRÍTICO inicializando Firebase: {e}")
-            db = None
+            print(f"ERROR CRÍTICO inicializando Firebase/Credenciales: {e}")
+            db, google_creds = None, None
 
-try:
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-except KeyError:
-    print("ADVERTENCIA: GEMINI_API_KEY no encontrada.")
+# ... (El resto de la inicialización de Gemini y OpenAI no cambia)
+try: genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+except KeyError: print("ADVERTENCIA: GEMINI_API_KEY no encontrada.")
+try: openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]); print("Cliente de OpenAI inicializado.")
+except KeyError: print("ADVERTENCIA: OPENAI_API_KEY no encontrada."); openai_client = None
 
-try:
-    openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    print("Cliente de OpenAI inicializado.")
-except KeyError:
-    print("ADVERTENCIA: OPENAI_API_KEY no encontrada.")
-    openai_client = None
-
-app = FastAPI(title="AgentFlow Production Backend", version="17.0.0")
+app = FastAPI(title="AgentFlow Production Backend", version="18.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ==============================================================================
@@ -227,14 +225,19 @@ def root(): return {"status": "AgentFlow Backend Activo"}
 @app.post("/api/audio-upload")
 @verify_token
 async def audio_upload(request: Request, file: UploadFile = File(...)):
-    # Esta función ahora funcionará porque `UploadFile` y `File` están definidos.
+    initialize_firebase_admin_once() # Aseguramos que las credenciales estén cargadas
+    if not google_creds:
+        raise HTTPException(status_code=500, detail="Las credenciales del servidor no están configuradas.")
+        
     try:
         audio_bytes = await file.read()
-        client = speech.SpeechClient()
+        
+        # [LA SOLUCIÓN CLAVE] - Le pasamos las credenciales explícitamente al cliente
+        client = speech.SpeechClient(credentials=google_creds)
+        
         audio = speech.RecognitionAudio(content=audio_bytes)
         config = speech.RecognitionConfig(
-            # Usaremos LINEAR16, que es más universal, y lo forzaremos en el frontend.
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16, 
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=16000,
             language_code="es-ES"
         )
@@ -249,7 +252,7 @@ async def audio_upload(request: Request, file: UploadFile = File(...)):
             
     except Exception as e:
         print(f"ERROR EN /api/audio-upload: {str(e)}")
-        return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": str(e)}})
+        return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": f"Error de transcripción: {e}"}})
 
 
 class CommandPayload(BaseModel): text: str
