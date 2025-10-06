@@ -222,19 +222,31 @@ def create_event_in_calendar(user_id: str, event_details: dict):
 @app.get("/")
 def root(): return {"status": "AgentFlow Backend Activo"}
 
+class AudioPayload(BaseModel): audio: str
 @app.post("/api/audio-upload")
 @verify_token
-async def audio_upload(request: Request, file: UploadFile = File(...)):
-    initialize_firebase_admin_once()
+async def audio_upload(request: Request, data: AudioPayload):
     try:
-        audio_bytes = await file.read()
-        client = speech.SpeechClient() # No necesita credenciales explícitas gracias al GOOGLE_APPLICATION_CREDENTIALS
+        audio_bytes = base64.b64decode(data.audio)
+        client = speech.SpeechClient()
         audio = speech.RecognitionAudio(content=audio_bytes)
-        config = speech.RecognitionConfig(encoding=speech.RecognitionConfig.AudioEncoding.MP4, sample_rate_hertz=44100, language_code="es-ES")
+        
+        # [LA SOLUCIÓN CLAVE Y DEFINITIVA PARA LA VOZ]
+        # Usamos el formato LINEAR16, que es universalmente compatible.
+        # Es el equivalente a un archivo WAV sin comprimir.
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=16000, # Frecuencia estándar para LINEAR16
+            language_code="es-ES"
+        )
+        
         response = client.recognize(config=config, audio=audio)
-        if not response.results or not response.results[0].alternatives: raise Exception("No se pudo transcribir el audio.")
+        if not response.results or not response.results[0].alternatives:
+            raise Exception("No se pudo transcribir el audio (respuesta vacía de la IA).")
+        
         transcribed_text = response.results[0].alternatives[0].transcript
         return await voice_command(request, CommandPayload(text=transcribed_text))
+            
     except Exception as e:
         print(f"ERROR EN /api/audio-upload: {str(e)}")
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": f"Error de transcripción: {e}"}})
