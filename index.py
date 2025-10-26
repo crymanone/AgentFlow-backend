@@ -255,14 +255,51 @@ class CommandPayload(BaseModel): text: str
 @app.post("/api/voice-command")
 @verify_token
 async def voice_command(request: Request, data: CommandPayload):
-    # ... (Tu lógica de voice-command, que ya estaba bien, se mantiene)
-    pass
+    user_id = request.state.user["uid"]
+    text_command = data.text
 
-@app.post("/api/drafts/send/{draft_id}")
-@verify_token
-async def send_draft(request: Request, draft_id: str):
-    # ... (Sin cambios)
-    pass
+    try:
+        # 1. Interpretación de la IA
+        intent = interpret_intent_with_openai(text_command)
+        action = intent.get("action")
+
+        # 2. Cadena de Lógica
+        if action == "summarize_inbox":
+            # ... tu código para resumir ...
+            # return JSONResponse(...)
+        
+        elif action == "search_emails":
+            # ... tu código para buscar ...
+            # return JSONResponse(...)
+
+        elif action == "create_draft":
+            # ... tu código para crear borrador ...
+            # return JSONResponse(...)
+
+        elif action == "create_event":
+            # ... tu código para crear evento ...
+            # return JSONResponse(...)
+
+        # [LA SOLUCIÓN CLAVE ESTÁ AQUÍ]
+        # 3. Bloque "Catch-All" o por defecto
+        else:
+            # Si la acción no es ninguna de las anteriores, devolvemos una respuesta clara.
+            return JSONResponse(
+                content={
+                    "action": "unknown_command",
+                    "payload": {
+                        "message": "No he entendido tu comando. Por favor, intenta ser más específico. Por ejemplo: 'Resume mi bandeja de entrada' o 'Crea un borrador para Juan'."
+                    }
+                }
+            )
+
+    except Exception as e:
+        # Tu manejo de errores existente está bien, esto es para errores inesperados.
+        print(f"ERROR EN /api/voice-command: {str(e)}")
+        return JSONResponse(
+            status_code=400,
+            content={"action": "error", "payload": {"message": str(e)}}
+        )
 
 # ==============================================================================
 # 6. ENDPOINTS DE CONEXIÓN DE CUENTAS (OAuth2) - [TU CÓDIGO FUNCIONAL RESTAURADO]
