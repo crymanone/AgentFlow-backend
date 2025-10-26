@@ -252,6 +252,8 @@ async def audio_upload(request: Request, data: AudioPayload):
         return JSONResponse(status_code=400, content={"action": "error", "payload": {"message": f"Error de transcripción: {e}"}})
 
 class CommandPayload(BaseModel): text: str
+# En tu archivo input_file_6.py, reemplaza la función voice_command completa
+
 @app.post("/api/voice-command")
 @verify_token
 async def voice_command(request: Request, data: CommandPayload):
@@ -259,42 +261,61 @@ async def voice_command(request: Request, data: CommandPayload):
     text_command = data.text
 
     try:
-        # 1. Interpretación de la IA
+        # 1. La IA interpreta la intención del usuario
         intent = interpret_intent_with_openai(text_command)
         action = intent.get("action")
+        params = intent.get("parameters", {})
 
-        # 2. Cadena de Lógica
+        # --- ACCIÓN 1: Resumir Bandeja de Entrada ---
         if action == "summarize_inbox":
-            # ... tu código para resumir ...
-            # return JSONResponse(...)
-        
+            emails = get_real_emails_for_user(user_id, max_results=15)
+            if not emails:
+                return JSONResponse(content={"action": "summarize_inbox_result", "payload": {"message": "Tu bandeja de entrada no tiene correos recientes para resumir."}})
+            
+            summary = summarize_emails_with_gemini(emails)
+            return JSONResponse(content={"action": "summarize_inbox", "payload": {"summary": summary}})
+
+        # --- ACCIÓN 2: Buscar Correos ---
         elif action == "search_emails":
-            # ... tu código para buscar ...
-            # return JSONResponse(...)
+            query = translate_params_to_gmail_query(params)
+            if not query:
+                raise ValueError("No entendí tu búsqueda. Intenta ser más específico, por ejemplo: 'busca correos de Juan sobre el presupuesto'.")
+            
+            emails_found = get_real_emails_for_user(user_id, search_query=query, max_results=10)
+            return JSONResponse(content={"action": "search_emails_result", "payload": {"emails": emails_found}})
 
+        # --- ACCIÓN 3: Crear un Borrador ---
         elif action == "create_draft":
-            # ... tu código para crear borrador ...
-            # return JSONResponse(...)
+            recipient_name = params.get("recipient_name")
+            if not recipient_name:
+                raise ValueError("Necesito saber para quién es el correo. Por ejemplo: 'redacta un correo para Ana'.")
 
+            contact_info = search_google_contacts(user_id, recipient_name)
+            
+            # Usar IA para enriquecer el borrador
+            if params.get("date_to_mention"):
+                params["concrete_date"] = parse_date_for_email(params["date_to_mention"])
+
+            draft_content = generate_draft_with_gemini(params, text_command)
+            draft_content["to"] = contact_info["email"]
+            
+            created_draft = create_draft_in_gmail(user_id, draft_content)
+            draft_content["id"] = created_draft.get("id")
+            
+            return JSONResponse(content={"action": "draft_created", "payload": {"draft": draft_content}})
+
+        # --- ACCIÓN 4: Crear un Evento de Calendario ---
         elif action == "create_event":
-            # ... tu código para crear evento ...
-            # return JSONResponse(...)
-
-        # [LA SOLUCIÓN CLAVE ESTÁ AQUÍ]
-        # 3. Bloque "Catch-All" o por defecto
+            event_result = create_event_in_calendar(user_id, params)
+            return JSONResponse(content={"action": "event_created", "payload": event_result})
+        
+        # --- BLOQUE POR DEFECTO: Comando no reconocido ---
         else:
-            # Si la acción no es ninguna de las anteriores, devolvemos una respuesta clara.
-            return JSONResponse(
-                content={
-                    "action": "unknown_command",
-                    "payload": {
-                        "message": "No he entendido tu comando. Por favor, intenta ser más específico. Por ejemplo: 'Resume mi bandeja de entrada' o 'Crea un borrador para Juan'."
-                    }
-                }
-            )
+            message = "No he entendido tu comando. Por favor, intenta ser más específico. Por ejemplo: 'Resume mi bandeja de entrada' o 'Crea un borrador para Juan'."
+            return JSONResponse(content={"action": "unknown_command", "payload": {"message": message}})
 
     except Exception as e:
-        # Tu manejo de errores existente está bien, esto es para errores inesperados.
+        # Manejo de cualquier error inesperado en el proceso
         print(f"ERROR EN /api/voice-command: {str(e)}")
         return JSONResponse(
             status_code=400,
